@@ -81,6 +81,9 @@ for (const page of slides) {
         margin: 3,
       });
     } else if (element.type === "chart" && element.labels.length) {
+      const chartAxis = Math.min(...element.values) >= 0
+        ? { valAxisMinVal: 0 }
+        : {};
       slide.addChart(
         pptx.ChartType.bar,
         [{ name: page.name, labels: element.labels, values: element.values }],
@@ -92,6 +95,9 @@ for (const page of slides) {
           valAxisLabelFontFace: element.font,
           chartColors: [hex(element.fill)],
           showTitle: false,
+          // Financial charts with non-negative values use a zero baseline so
+          // differences are not visually exaggerated by a truncated axis.
+          ...chartAxis,
         },
       );
     }
