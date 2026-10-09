@@ -65,7 +65,12 @@ class Gateway:
             raise HTTPException(401, "authorization_expired")
         if response.status_code != 200:
             raise HTTPException(503, "gateway_unavailable")
-        body = response.json()
+        try:
+            body = response.json()
+        except (TypeError, ValueError):
+            raise HTTPException(503, "gateway_unavailable") from None
+        if not isinstance(body, dict):
+            raise HTTPException(503, "gateway_unavailable")
         if body.get("success") is False:
             raise HTTPException(503, "gateway_unavailable")
         return body.get("data", body)

@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 
 from pptx import Presentation
@@ -114,6 +115,70 @@ def test_outline_response_normalizes_structured_and_short_model_output():
     assert outline[1] == "方案 — 核心做法"
     assert "新能源项目年度规划" in outline[-1]
     assert {warning["code"] for warning in warnings} == {"outline_normalized"}
+
+
+def test_text_json_handles_common_model_content_shapes(monkeypatch):
+    from pipi.backend.generation import text_json
+
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "```json\n{\"outline\":[\"一页\"]}\n```"}
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": "这不是 JSON"}}]},
+        ]
+    )
+    monkeypatch.setattr(
+        "pipi.backend.generation.call_model", lambda *args, **kwargs: next(responses)
+    )
+
+    assert text_json("job", "step-1", "model", "prompt") == {"outline": ["一页"]}
+    invalid = text_json("job", "step-2", "model", "prompt")
+    assert invalid["_pipi_warnings"][0]["code"] == "invalid_model_json"
+
+
+def test_invalid_optional_image_does_not_fail_page_generation(site, monkeypatch):
+    client, _, _ = site
+    from pipi.backend.worker import run_job
+
+    outline_job = create(client, "invalid-image-create").json()
+    run_job(outline_job["id"])
+    deck = client.get("/api/decks/" + outline_job["deck_id"]).json()
+    generated = client.post(
+        f"/api/decks/{deck['id']}/generate",
+        headers={"Idempotency-Key": "invalid-image-generate"},
+        json={"text_model": "tested-text", "image_model": "tested-image", "images": True},
+    )
+    assert generated.status_code == 200, generated.text
+
+    def page_with_image(*args, **kwargs):
+        prompt = args[3]
+        fields = json.loads(
+            prompt.split("Template text slots: ", 1)[1].split(". Return JSON", 1)[0]
+        )
+        return {
+            "fields": {slot["id"]: "中文内容" for slot in fields},
+            "image_prompt": "Optional illustration",
+        }
+
+    monkeypatch.setattr("pipi.backend.worker.text_json", page_with_image)
+    monkeypatch.setattr("pipi.backend.worker.call_model", lambda *args, **kwargs: {"data": [{}]})
+    for _ in range(5):
+        run_job(generated.json()["id"])
+
+    job = next(
+        item for item in client.get("/api/jobs").json() if item["id"] == generated.json()["id"]
+    )
+    assert job["status"] == "complete"
+    assert any(warning["code"] == "image_generation_failed" for warning in job["result"]["warnings"])
 
 
 def test_two_user_isolation_files_jobs_and_csrf(site):

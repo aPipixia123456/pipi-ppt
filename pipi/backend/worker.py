@@ -1,5 +1,7 @@
 import base64
+import binascii
 import json
+import math
 import shutil
 import unicodedata
 from copy import deepcopy
@@ -74,6 +76,11 @@ def _outline_item_text(item) -> str:
 def normalize_outline_response(result: dict, slide_count: int, source: str) -> tuple[list[str], list[dict]]:
     """Keep an otherwise useful model response usable when its JSON shape drifts."""
     raw = result.get("outline") if isinstance(result, dict) else None
+    if raw is None and isinstance(result, dict):
+        for key in ("slides", "items", "pages", "entries"):
+            if isinstance(result.get(key), list):
+                raw = result[key]
+                break
     if isinstance(raw, dict):
         for key in ("slides", "items", "pages", "entries"):
             if isinstance(raw.get(key), list):
@@ -86,6 +93,12 @@ def normalize_outline_response(result: dict, slide_count: int, source: str) -> t
 
     outline = [text for item in raw if (text := _outline_item_text(item))]
     warnings: list[dict] = []
+    if isinstance(result, dict) and isinstance(result.get("_pipi_warnings"), list):
+        warnings.extend(
+            warning
+            for warning in result["_pipi_warnings"]
+            if isinstance(warning, dict) and isinstance(warning.get("code"), str)
+        )
     if len(outline) > slide_count:
         warnings.append({"code": "outline_truncated", "received": len(outline), "kept": slide_count})
         outline = outline[:slide_count]
@@ -112,6 +125,48 @@ def normalize_outline_response(result: dict, slide_count: int, source: str) -> t
     if warnings or len(outline) != len(raw):
         warnings.append({"code": "outline_normalized"})
     return outline, warnings
+
+
+def _safe_chart_data(value) -> tuple[list[str], list[float], bool]:
+    if not isinstance(value, dict):
+        return [], [], value is not None
+    labels, values = value.get("labels", []), value.get("values", [])
+    if not isinstance(labels, list) or not isinstance(values, list):
+        return [], [], True
+    invalid = len(labels) != len(values) or len(labels) > 30 or len(values) > 30
+    safe_labels, safe_values = [], []
+    for label, raw_value in zip(labels[:30], values[:30], strict=False):
+        try:
+            number = float(raw_value)
+        except (TypeError, ValueError):
+            invalid = True
+            continue
+        if not math.isfinite(number) or abs(number) > 1e12:
+            invalid = True
+            continue
+        safe_labels.append(str(label)[:100])
+        safe_values.append(number)
+    return safe_labels, safe_values, invalid
+
+
+def _safe_table_rows(value) -> tuple[list[list[str]], bool]:
+    if not isinstance(value, list):
+        return [], value is not None
+    invalid = len(value) > 25
+    rows = []
+    for raw_row in value[:25]:
+        if not isinstance(raw_row, list):
+            invalid = True
+            continue
+        if len(raw_row) > 12:
+            invalid = True
+        row = []
+        for cell in raw_row[:12]:
+            if not isinstance(cell, (str, int, float, bool)):
+                invalid = True
+            row.append(str(cell)[:300])
+        rows.append(row)
+    return rows, invalid
 
 
 def submit(db, auth, kind: str, args: dict, key: str, deck_id: str | None = None) -> Job:
@@ -319,6 +374,13 @@ def generate_page(job: Job, deck: Deck):
     ]
     prompt += f' Data slots: {json.dumps(data_slots)}. Also return "charts":{{"slot-id":{{"labels":["category"],"values":[number]}}}} and "tables":{{"slot-id":[["cell"]]}} where relevant. Use only numerical facts from the outline; if none exist, return empty arrays. Never retain example data.'
     response = text_json(job.id, f"page-{index}", job.args["text_model"], prompt)
+    response_warnings = []
+    if isinstance(response, dict) and isinstance(response.get("_pipi_warnings"), list):
+        response_warnings = [
+            warning
+            for warning in response["_pipi_warnings"]
+            if isinstance(warning, dict) and isinstance(warning.get("code"), str)
+        ]
     values = response.get("fields", {})
     if not isinstance(values, dict):
         values = {}
@@ -337,6 +399,19 @@ def generate_page(job: Job, deck: Deck):
         if str(key) not in editable_ids and isinstance(value, str)
     ]
     missing_slots = []
+    data_warnings = []
+    charts = response.get("charts")
+    tables = response.get("tables")
+    if charts is None:
+        charts = {}
+    elif not isinstance(charts, dict):
+        data_warnings.append({"code": "invalid_chart_data"})
+        charts = {}
+    if tables is None:
+        tables = {}
+    elif not isinstance(tables, dict):
+        data_warnings.append({"code": "invalid_table_data"})
+        tables = {}
     image_slots = [
         element
         for element in layout["elements"]
@@ -354,10 +429,15 @@ def generate_page(job: Job, deck: Deck):
             element["text"] = value[: element["max_chars"]]
             fit_text(element)
         elif element["type"] == "chart" and element["editable"]:
-            chart = response.get("charts", {}).get(element["id"], {})
-            element["labels"], element["values"] = chart.get("labels", []), chart.get("values", [])
+            labels, values, invalid = _safe_chart_data(charts.get(element["id"]))
+            element["labels"], element["values"] = labels, values
+            if invalid:
+                data_warnings.append({"code": "invalid_chart_data", "slot": element["id"]})
         elif element["type"] == "table" and element["editable"]:
-            element["rows"] = response.get("tables", {}).get(element["id"], [])
+            rows, invalid = _safe_table_rows(tables.get(element["id"]))
+            element["rows"] = rows
+            if invalid:
+                data_warnings.append({"code": "invalid_table_data", "slot": element["id"]})
     layout["name"], layout["notes"] = (
         deck.outline[index][:200],
         str(response.get("notes", ""))[:10000],
@@ -378,55 +458,94 @@ def generate_page(job: Job, deck: Deck):
         checkpoint = db.get(Job, job.id)
         result = {**checkpoint.result, "deck_version": record.version}
         warnings = list(result.get("warnings", []))
+        for warning in response_warnings + data_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
         if missing_slots:
-            warnings.append({"code": "missing_text_slots", "slots": missing_slots})
+            warning = {"code": "missing_text_slots", "slots": missing_slots}
+            if warning not in warnings:
+                warnings.append(warning)
         if job.args.get("images") and image_slots and response.get("image_prompt") and not job.args.get("image_model"):
-            warnings.append({"code": "image_model_unavailable"})
+            warning = {"code": "image_model_unavailable"}
+            if warning not in warnings:
+                warnings.append(warning)
         if warnings:
             result["warnings"] = warnings
         checkpoint.result = result
         db.commit()
     if job.args.get("images") and image_slots and response.get("image_prompt") and job.args.get("image_model"):
-        generated = call_model(
-            job.id,
-            f"image-{index}",
-            job.args["image_model"],
-            "image",
-            {
-                "prompt": str(response["image_prompt"])[:3000],
-                "n": 1,
-                "size": "1024x1024",
-                "response_format": "b64_json",
-            },
-        )
-        data = generated["data"][0].get("b64_json")
-        if not data:
-            # No arbitrary remote URLs are downloaded from model output.
-            raise ValueError("image_model_must_return_base64")
-        raw = base64.b64decode(data, validate=True)
-        media_type = validate_upload("image.png", raw, "image")
-        asset = store_asset(
-            job.owner,
-            f"slide-{index + 1}.png",
-            raw,
-            media_type,
-            "generated-image",
-            idempotency_key=f"{job.id}:image:{index}",
-        )
-        for element in image_slots:
-            element["asset_id"] = asset.id
-        with session() as db:
-            record = db.get(Deck, deck.id)
-            slides = deepcopy(record.slides)
-            slides[index] = Slide.model_validate(layout).model_dump()
-            record.slides, record.version, record.updated = (
-                slides,
-                record.version + 1,
-                now(),
+        try:
+            generated = call_model(
+                job.id,
+                f"image-{index}",
+                job.args["image_model"],
+                "image",
+                {
+                    "prompt": str(response["image_prompt"])[:3000],
+                    "n": 1,
+                    "size": "1024x1024",
+                    "response_format": "b64_json",
+                },
             )
-            checkpoint = db.get(Job, job.id)
-            checkpoint.result = {**checkpoint.result, "deck_version": record.version}
-            db.commit()
+            image_data = generated.get("data") if isinstance(generated, dict) else None
+            first_image = image_data[0] if isinstance(image_data, list) and image_data else None
+            data = first_image.get("b64_json") if isinstance(first_image, dict) else None
+            if not isinstance(data, str) or not data:
+                raise ValueError("image_model_must_return_base64")
+            raw = base64.b64decode(data, validate=True)
+            media_type = validate_upload("image.png", raw, "image")
+            asset = store_asset(
+                job.owner,
+                f"slide-{index + 1}.png",
+                raw,
+                media_type,
+                "generated-image",
+                idempotency_key=f"{job.id}:image:{index}",
+            )
+            for element in image_slots:
+                element["asset_id"] = asset.id
+            with session() as db:
+                record = db.get(Deck, deck.id)
+                slides = deepcopy(record.slides)
+                slides[index] = Slide.model_validate(layout).model_dump()
+                record.slides, record.version, record.updated = (
+                    slides,
+                    record.version + 1,
+                    now(),
+                )
+                checkpoint = db.get(Job, job.id)
+                checkpoint.result = {**checkpoint.result, "deck_version": record.version}
+                db.commit()
+        except UncertainCall:
+            raise
+        except HTTPException as exc:
+            if exc.status_code != 413:
+                raise
+            warning = {
+                "code": "image_generation_failed",
+                "slide": index + 1,
+                "reason": str(exc.detail)[:80],
+            }
+            with session() as db:
+                checkpoint = db.get(Job, job.id)
+                result = {**checkpoint.result}
+                warnings = list(result.get("warnings", []))
+                if warning not in warnings:
+                    warnings.append(warning)
+                result["warnings"] = warnings
+                checkpoint.result = result
+                db.commit()
+        except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, binascii.Error):
+            warning = {"code": "image_generation_failed", "slide": index + 1}
+            with session() as db:
+                checkpoint = db.get(Job, job.id)
+                result = {**checkpoint.result}
+                warnings = list(result.get("warnings", []))
+                if warning not in warnings:
+                    warnings.append(warning)
+                result["warnings"] = warnings
+                checkpoint.result = result
+                db.commit()
     with session() as db:
         record = db.get(Job, job.id)
         record.cursor += 1

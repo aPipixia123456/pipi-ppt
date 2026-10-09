@@ -13,9 +13,50 @@ class UncertainCall(Exception):
     """A request may have been charged; automatic inference retry is forbidden."""
 
 
+def _invalid_json_response(code: str) -> dict:
+    return {"_pipi_warnings": [{"code": code}]}
+
+
+def _parse_json_content(content) -> dict:
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, list):
+        fragments = []
+        for part in content:
+            if isinstance(part, str):
+                fragments.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                fragments.append(part["text"])
+        content = "".join(fragments)
+    if not isinstance(content, str):
+        return _invalid_json_response("invalid_model_content")
+
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1]).strip() if len(lines) >= 3 else ""
+    decoder = json.JSONDecoder()
+    for start, character in enumerate(text):
+        if character not in "[{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"outline": parsed}
+    return _invalid_json_response("invalid_model_json")
+
+
 def available_models(gateway, policy: dict) -> dict:
     available = gateway.data("/v1/models")
-    ids = {entry["id"] for entry in available}
+    ids = {
+        entry.get("id")
+        for entry in available
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
     return {
         "text": [m for m in policy["text_models"] if m in ids],
         "image": [m for m in policy["image_models"] if m in ids],
@@ -102,5 +143,6 @@ def text_json(job_id: str, step: str, model: str, prompt: str, images: list[byte
             "max_tokens": 5000,
         },
     )
-    text = result["choices"][0]["message"]["content"]
-    return json.loads(text)
+    choices = result.get("choices", []) if isinstance(result, dict) else []
+    message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+    return _parse_json_content(message.get("content"))
