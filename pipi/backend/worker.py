@@ -42,6 +42,78 @@ celery.conf.update(
 )
 
 
+def _outline_item_text(item) -> str:
+    """Convert the outline shapes commonly returned by chat models to text."""
+    if isinstance(item, str):
+        return item.strip()[:1000]
+    if not isinstance(item, dict):
+        return ""
+
+    title = ""
+    for key in ("title", "heading", "name", "topic"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            title = value.strip()
+            break
+    details = ""
+    for key in ("key_points", "points", "bullets", "summary", "content", "description"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            details = value.strip()
+            break
+        if isinstance(value, list):
+            parts = [str(part).strip() for part in value if str(part).strip()]
+            if parts:
+                details = "；".join(parts)
+                break
+    if title and details and details != title:
+        return f"{title} — {details}"[:1000]
+    return (title or details)[:1000]
+
+
+def normalize_outline_response(result: dict, slide_count: int, source: str) -> tuple[list[str], list[dict]]:
+    """Keep an otherwise useful model response usable when its JSON shape drifts."""
+    raw = result.get("outline") if isinstance(result, dict) else None
+    if isinstance(raw, dict):
+        for key in ("slides", "items", "pages", "entries"):
+            if isinstance(raw.get(key), list):
+                raw = raw[key]
+                break
+    if isinstance(raw, str):
+        raw = [line.strip(" -*\t") for line in raw.splitlines() if line.strip()]
+    if not isinstance(raw, list):
+        raw = []
+
+    outline = [text for item in raw if (text := _outline_item_text(item))]
+    warnings: list[dict] = []
+    if len(outline) > slide_count:
+        warnings.append({"code": "outline_truncated", "received": len(outline), "kept": slide_count})
+        outline = outline[:slide_count]
+
+    subject = next(
+        (line.strip(" -*#\t")[:80] for line in source.splitlines() if line.strip()),
+        "主题内容",
+    )
+    fallback_topics = [
+        "主题与目标",
+        "背景与现状",
+        "关键问题",
+        "核心方案",
+        "实施计划",
+        "资源与预算",
+        "风险与应对",
+        "指标与验收",
+        "案例与证据",
+        "总结与下一步",
+    ]
+    while len(outline) < slide_count:
+        topic = fallback_topics[len(outline) % len(fallback_topics)]
+        outline.append(f"{topic} — 围绕“{subject}”补充关键内容与行动建议")
+    if warnings or len(outline) != len(raw):
+        warnings.append({"code": "outline_normalized"})
+    return outline, warnings
+
+
 def submit(db, auth, kind: str, args: dict, key: str, deck_id: str | None = None) -> Job:
     if not key or len(key) > 80:
         raise HTTPException(400, "idempotency_key_required")
@@ -168,13 +240,11 @@ def run_job(job_id: str):
                 job_id,
                 "outline",
                 job.args["text_model"],
-                f'Create exactly {job.args["slide_count"]} slide outlines from the following source. JSON: {{"outline":["title — key points"]}}. Each entry <= 1000 characters.\n{source[:120000]}',
+                f'Create exactly {job.args["slide_count"]} slide outlines. Return only a JSON object, with exactly {job.args["slide_count"]} string entries in "outline". Do not use Markdown or code fences. Each entry should be a concise slide title followed by key points, no more than 1000 characters. Example shape (do not copy the example text): {{"outline":["title — key points"]}}. Source:\n{source[:120000]}',
             )
-            outline = result.get("outline", [])
-            if len(outline) != job.args["slide_count"] or any(
-                not isinstance(s, str) or not s.strip() or len(s) > 1000 for s in outline
-            ):
-                raise ValueError("invalid_outline_response")
+            outline, warnings = normalize_outline_response(
+                result, job.args["slide_count"], source
+            )
             with session() as db:
                 record = db.get(Deck, deck.id)
                 record.outline, record.updated, record.version = (
@@ -183,7 +253,7 @@ def run_job(job_id: str):
                     record.version + 1,
                 )
                 db.commit()
-            complete(job_id, {"deck_id": deck.id})
+            complete(job_id, {"deck_id": deck.id, "warnings": warnings} if warnings else {"deck_id": deck.id})
         elif job.kind in {"generate", "rewrite"}:
             generate_page(job, deck)
         elif job.kind == "template":

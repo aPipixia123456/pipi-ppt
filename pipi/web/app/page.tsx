@@ -1342,6 +1342,10 @@ function errorText(error: string, t: (zh: string, en: string) => string) {
       "所选模型当前不可用，请检查账号权限与推荐模型配置。",
       "The selected model is unavailable. Check account access and site settings.",
     ],
+    invalid_outline_response: [
+      "模型返回的大纲格式不完整。点击“恢复”可使用已保存的模型结果继续处理。",
+      "The model returned an incomplete outline. Click Resume to continue with the saved result.",
+    ],
     version_conflict: [
       "作品已有新版本。请保存本地修改后重新打开，避免覆盖。",
       "A newer version exists. Preserve your edits and reopen the presentation.",

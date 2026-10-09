@@ -95,6 +95,27 @@ def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
     assert len(client.get("/api/decks/" + deck["id"]).json()["slides"]) == 5
 
 
+def test_outline_response_normalizes_structured_and_short_model_output():
+    from pipi.backend.worker import normalize_outline_response
+
+    outline, warnings = normalize_outline_response(
+        {
+            "outline": [
+                {"title": "背景", "key_points": ["现状", "问题"]},
+                {"heading": "方案", "summary": "核心做法"},
+            ]
+        },
+        5,
+        "新能源项目年度规划",
+    )
+
+    assert len(outline) == 5
+    assert outline[0] == "背景 — 现状；问题"
+    assert outline[1] == "方案 — 核心做法"
+    assert "新能源项目年度规划" in outline[-1]
+    assert {warning["code"] for warning in warnings} == {"outline_normalized"}
+
+
 def test_two_user_isolation_files_jobs_and_csrf(site):
     client, _, _ = site
     first = create(client).json()
