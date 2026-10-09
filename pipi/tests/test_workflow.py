@@ -93,7 +93,16 @@ def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
     warning_codes = {warning["code"] for warning in job["result"]["warnings"]}
     assert "missing_text_slots" in warning_codes
     assert "image_model_unavailable" in warning_codes
-    assert len(client.get("/api/decks/" + deck["id"]).json()["slides"]) == 5
+    saved = client.get("/api/decks/" + deck["id"]).json()
+    assert len(saved["slides"]) == 5
+    text = "\n".join(
+        element["text"]
+        for slide in saved["slides"]
+        for element in slide["elements"]
+        if element["type"] == "text"
+    )
+    assert "Product Overview" not in text
+    assert "Our product offers" not in text
 
 
 def test_outline_response_normalizes_structured_and_short_model_output():

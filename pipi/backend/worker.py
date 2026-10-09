@@ -2,6 +2,7 @@ import base64
 import binascii
 import json
 import math
+import re
 import shutil
 import unicodedata
 from copy import deepcopy
@@ -167,6 +168,50 @@ def _safe_table_rows(value) -> tuple[list[list[str]], bool]:
             row.append(str(cell)[:300])
         rows.append(row)
     return rows, invalid
+
+
+def _page_fallback_copy(outline: str) -> tuple[str, str]:
+    """Derive short, topic-specific copy when a model omits a text slot."""
+    parts = [part.strip() for part in re.split(r"[｜|]", outline) if part.strip()]
+    headline = parts[0] if parts else outline.strip()
+    if "：" in headline:
+        prefix, remainder = headline.split("：", 1)
+        if remainder.strip():
+            headline = remainder.strip()
+    body_parts = []
+    for part in parts[1:]:
+        if "：" in part:
+            label, remainder = part.split("：", 1)
+            if label.strip() in {"目的", "要点", "内容", "建议"}:
+                part = remainder.strip()
+        if part:
+            body_parts.append(part)
+    body = "；".join(body_parts) or headline
+    return headline[:200], body[:1200]
+
+
+def _field_values(raw) -> dict[str, str]:
+    """Accept the common object and list forms used by chat models for fields."""
+    values: dict[str, str] = {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("id") or item.get("slot") or item.get("name")
+            value = item.get("text", item.get("value", item.get("content")))
+            if key is not None:
+                items.append((key, value))
+    else:
+        return values
+    for key, value in items:
+        if isinstance(value, dict):
+            value = value.get("text", value.get("value", value.get("content")))
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            values[str(key)] = str(value)
+    return values
 
 
 def submit(db, auth, kind: str, args: dict, key: str, deck_id: str | None = None) -> Job:
@@ -416,25 +461,24 @@ Use only numerical facts present in the outline or source; if the outline has no
             for warning in response["_pipi_warnings"]
             if isinstance(warning, dict) and isinstance(warning.get("code"), str)
         ]
-    values = response.get("fields", {})
-    if not isinstance(values, dict):
-        values = {}
+    values = _field_values(response.get("fields"))
     editable_ids = {
         element["id"]
         for element in layout["elements"]
         if element["type"] == "text" and element["editable"]
     }
     # Models occasionally copy an example string into the key instead of using
-    # the requested slot id. If there is only one such value and one missing
-    # slot, recover it without making another paid model call. Other missing
-    # slots keep the template's existing text so the job can continue safely.
+    # the requested slot id. Reassign those values by slot order before using
+    # deterministic copy derived from the outline. This keeps template example
+    # text from leaking into the user's deck when a response is incomplete.
     unmatched_values = [
         value
         for key, value in values.items()
-        if str(key) not in editable_ids and isinstance(value, str)
+        if str(key) not in editable_ids
     ]
     missing_slots = []
     data_warnings = []
+    fallback_headline, fallback_body = _page_fallback_copy(deck.outline[index])
     charts = response.get("charts")
     tables = response.get("tables")
     if charts is None:
@@ -452,10 +496,15 @@ Use only numerical facts present in the outline or source; if the outline has no
             value = values.get(element["id"])
             if not isinstance(value, str):
                 missing_slots.append(element["id"])
-                if len(missing_slots) == 1 and len(unmatched_values) == 1:
-                    value = unmatched_values[0]
-                else:
+                if unmatched_values:
+                    value = unmatched_values.pop(0)
+                elif element["max_chars"] <= 4 and element.get("text", "").strip().isdigit():
+                    # Numbered timeline markers are part of the layout, not copy.
                     value = element.get("text", "")
+                elif element["max_chars"] <= 40 or element["font_size"] >= 38:
+                    value = fallback_headline
+                else:
+                    value = fallback_body
             element["text"] = value[: element["max_chars"]]
             fit_text(element)
         elif element["type"] == "chart" and element["editable"]:
@@ -493,6 +542,9 @@ Use only numerical facts present in the outline or source; if the outline has no
                 warnings.append(warning)
         if missing_slots:
             warning = {"code": "missing_text_slots", "slots": missing_slots}
+            if warning not in warnings:
+                warnings.append(warning)
+            warning = {"code": "text_slot_fallback_applied"}
             if warning not in warnings:
                 warnings.append(warning)
         if job.args.get("images") and image_slots and response.get("image_prompt") and not job.args.get("image_model"):
