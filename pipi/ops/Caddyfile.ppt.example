@@ -1,0 +1,21 @@
+# Caddy >= 2.10; import this file from the existing Caddyfile.
+# Enable after the PPT service and gateway authorization pass acceptance.
+ppt.pipixia1.online {
+	encode zstd gzip
+	request_body {
+		max_size 22MB
+	}
+	# Do not retain authorization callback query strings in access logs.
+	log {
+		output discard
+	}
+	reverse_proxy 127.0.0.1:3100 {
+		transport http {
+			response_header_timeout 240s
+		}
+	}
+	handle_errors {
+		header Content-Type "text/plain; charset=utf-8"
+		respond "Pipi PPT 服务暂时不可用，请稍后重试。 / Service temporarily unavailable." 503
+	}
+}

@@ -1,0 +1,24 @@
+FROM node:22-bookworm-slim AS export-deps
+RUN npm install -g bun@1.3.14
+WORKDIR /export
+COPY pipi/export/package.json pipi/export/bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-impress poppler-utils fonts-noto-cjk fonts-liberation tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 pipi
+COPY --from=export-deps /usr/local/bin/node /usr/local/bin/node
+WORKDIR /app
+COPY pipi/requirements.lock /app/pipi/requirements.lock
+RUN pip install --no-cache-dir -r /app/pipi/requirements.lock
+COPY pipi/backend /app/pipi/backend
+COPY pipi/export /app/pipi/export
+COPY --from=export-deps /export/node_modules /app/pipi/export/node_modules
+COPY templates /app/templates
+COPY LICENSE NOTICE /app/
+RUN mkdir -p /data/tmp && chown -R pipi:pipi /data
+USER 10001
+ENV PYTHONUNBUFFERED=1 PIPI_STORAGE_DIR=/data
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["uvicorn", "pipi.backend.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

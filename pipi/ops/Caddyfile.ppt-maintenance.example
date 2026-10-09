@@ -1,0 +1,13 @@
+# Import this while deployment and model acceptance are pending.
+ppt.pipixia1.online {
+	header {
+		Content-Type "text/plain; charset=utf-8"
+		Cache-Control "no-store"
+		Retry-After "3600"
+		X-Content-Type-Options "nosniff"
+	}
+	log {
+		output discard
+	}
+	respond "Pipi PPT 正在部署，暂未开放。 / Deployment in progress." 503
+}

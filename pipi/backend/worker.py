@@ -1,0 +1,425 @@
+import base64
+import json
+import shutil
+import unicodedata
+from copy import deepcopy
+from datetime import timedelta
+
+from celery import Celery
+from fastapi import HTTPException
+from sqlalchemy import delete, func, select, update
+
+from .config import settings
+from .conversion import export_deck, template_previews
+from .db import Asset, Deck, Job, LoginState, Policy, Step, Template, WebSession, now, session
+from .generation import UncertainCall, call_model, text_json
+from .schema import Slide
+from .security import job_gateway
+from .storage import (
+    asset_path,
+    owned_asset,
+    read_document,
+    store_asset,
+    validate_upload,
+)
+from .templates import imported_template, layout_for
+
+celery = Celery("pipi", broker=settings().redis_url)
+celery.conf.update(
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    task_serializer="json",
+    accept_content=["json"],
+    broker_connection_retry_on_startup=True,
+    task_soft_time_limit=480,
+    task_time_limit=510,
+    broker_transport_options={"visibility_timeout": 600},
+    beat_schedule={
+        "dispatch-outbox": {"task": "pipi.dispatch", "schedule": 10.0},
+        "cleanup": {"task": "pipi.cleanup", "schedule": 3600.0},
+    },
+)
+
+
+def submit(db, auth, kind: str, args: dict, key: str, deck_id: str | None = None) -> Job:
+    if not key or len(key) > 80:
+        raise HTTPException(400, "idempotency_key_required")
+    policy = db.scalar(select(Policy).where(Policy.id == 1).with_for_update()).data
+    existing = db.scalar(select(Job).where(Job.owner == auth.owner, Job.idempotency_key == key))
+    if existing:
+        if existing.kind != kind or existing.args != args or existing.deck_id != deck_id:
+            raise HTTPException(409, "idempotency_key_reused")
+        return existing
+    if not policy["enabled"] and kind != "export":
+        raise HTTPException(503, "site_paused")
+    queued = db.scalar(
+        select(func.count()).select_from(Job).where(Job.owner == auth.owner, Job.status == "queued")
+    )
+    if queued >= policy["user_queued"]:
+        raise HTTPException(429, "queue_full")
+    if (
+        deck_id
+        and db.scalar(
+            select(Job.id).where(Job.deck_id == deck_id, Job.status.in_(["queued", "running"]))
+        )
+        and kind != "export"
+    ):
+        raise HTTPException(409, "deck_busy")
+    job = Job(
+        owner=auth.owner,
+        session_id=auth.id,
+        kind=kind,
+        args=args,
+        idempotency_key=key,
+        deck_id=deck_id,
+    )
+    db.add(job)
+    db.commit()  # Durable outbox; beat dispatches even if Redis is temporarily down.
+    return job
+
+
+@celery.task(name="pipi.dispatch")
+def dispatch():
+    with session() as db:
+        # A model call is never automatically replayed after an expired lease.
+        stale = db.scalars(
+            select(Job).where(Job.status == "running", Job.updated < now() - timedelta(minutes=10))
+        ).all()
+        for job in stale:
+            uncertain = db.scalar(
+                select(Step.id).where(
+                    Step.job_id == job.id, Step.status.in_(["calling", "uncertain"])
+                )
+            )
+            job.status = "awaiting_confirmation" if uncertain else "queued"
+            job.error = "worker_interrupted_model_result_unconfirmed" if uncertain else None
+            job.updated = now()
+        db.commit()
+        jobs = db.scalars(
+            select(Job).where(Job.status == "queued").order_by(Job.created).limit(100)
+        ).all()
+        for job in jobs:
+            run_job.apply_async(
+                args=[job.id], queue="export" if job.kind == "export" else "generation"
+            )
+
+
+def claim(job_id: str) -> bool:
+    with session() as db:
+        policy = db.scalar(select(Policy).where(Policy.id == 1).with_for_update()).data
+        job = db.get(Job, job_id)
+        if not job or job.status != "queued":
+            return False
+        if job.cancel_requested:
+            job.status = "cancelled"
+            db.commit()
+            return False
+        if not policy["enabled"] and job.kind != "export":
+            return False
+        exporting = job.kind == "export"
+        global_running = db.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(
+                Job.status == "running",
+                (Job.kind == "export") if exporting else (Job.kind != "export"),
+            )
+        )
+        user_running = db.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(Job.status == "running", Job.owner == job.owner)
+        )
+        if (
+            global_running
+            >= policy["export_concurrency" if exporting else "generation_concurrency"]
+            or user_running >= policy["user_running"]
+        ):
+            return False
+        result = db.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "queued")
+            .values(status="running", updated=now())
+        )
+        db.commit()
+        return result.rowcount == 1
+
+
+@celery.task(name="pipi.run")
+def run_job(job_id: str):
+    if not claim(job_id):
+        return
+    try:
+        with session() as db:
+            job = db.get(Job, job_id)
+            deck = db.get(Deck, job.deck_id) if job.deck_id else None
+        job_gateway(job_id)  # Validate revocation and live account on each stage.
+        if job.kind == "outline":
+            source = job.args["topic"]
+            with session() as db:
+                for asset_id in job.args.get("document_ids", []):
+                    source += (
+                        "\n<reference>"
+                        + read_document(owned_asset(db, job.owner, asset_id))
+                        + "</reference>"
+                    )
+            result = text_json(
+                job_id,
+                "outline",
+                job.args["text_model"],
+                f'Create exactly {job.args["slide_count"]} slide outlines from the following source. JSON: {{"outline":["title — key points"]}}. Each entry <= 1000 characters.\n{source[:120000]}',
+            )
+            outline = result.get("outline", [])
+            if len(outline) != job.args["slide_count"] or any(
+                not isinstance(s, str) or not s.strip() or len(s) > 1000 for s in outline
+            ):
+                raise ValueError("invalid_outline_response")
+            with session() as db:
+                record = db.get(Deck, deck.id)
+                record.outline, record.updated, record.version = (
+                    outline,
+                    now(),
+                    record.version + 1,
+                )
+                db.commit()
+            complete(job_id, {"deck_id": deck.id})
+        elif job.kind in {"generate", "rewrite"}:
+            generate_page(job, deck)
+        elif job.kind == "template":
+            import_template(job)
+        elif job.kind == "export":
+            # Snapshot was validated and stored at submit time; later edits cannot
+            # change an export already in the queue. No model calls occur here.
+            asset = export_deck(
+                job.owner, job.args["title"], job.args["slides"], job.args["format"], job.id
+            )
+            complete(job_id, {"asset_id": asset.id})
+        else:
+            raise ValueError("unknown_job_kind")
+    except UncertainCall:
+        fail(job_id, "awaiting_confirmation", "model_result_unconfirmed")
+    except HTTPException as exc:
+        fail(
+            job_id,
+            "cancelled" if exc.status_code == 409 else "failed",
+            str(exc.detail)[:200],
+        )
+    except (ValueError, KeyError, IndexError) as exc:
+        # Do not leak upstream responses, credentials or arbitrary document text.
+        message = (
+            str(exc) if str(exc).replace("_", "").isalnum() else "invalid_model_or_document_result"
+        )
+        fail(job_id, "failed", message[:200])
+    except Exception:
+        fail(job_id, "failed", "processing_failed")
+        raise  # Worker logs a traceback without model/request bodies.
+
+
+def complete(job_id: str, result: dict):
+    with session() as db:
+        job = db.get(Job, job_id)
+        job.status, job.result, job.updated = "complete", result, now()
+        db.execute(update(Step).where(Step.job_id == job_id).values(response=None))
+        db.commit()
+
+
+def fail(job_id: str, status: str, message: str):
+    with session() as db:
+        job = db.get(Job, job_id)
+        job.status, job.error, job.updated = status, message, now()
+        db.commit()
+
+
+def generate_page(job: Job, deck: Deck):
+    index = job.args["index"] if job.kind == "rewrite" else job.cursor
+    layout = (
+        deepcopy(deck.slides[index]) if job.kind == "rewrite" else layout_for(deck.template, index)
+    )
+    fields = [
+        {"id": e["id"], "max_chars": e["max_chars"], "example": e["text"]}
+        for e in layout["elements"]
+        if e["type"] == "text" and e["editable"]
+    ]
+    prompt = f'Slide {index + 1}. Outline: {deck.outline[index]}. Instructions: {job.args.get("instruction", "")}. Template text slots: {json.dumps(fields, ensure_ascii=False)}. Return JSON {{"fields":{{"slot-id":"text"}},"notes":"speaker notes","image_prompt":"optional illustration"}}. Fill every text slot, respect max_chars, no HTML. Keep decorative text unchanged.'
+    data_slots = [
+        {"id": e["id"], "type": e["type"]}
+        for e in layout["elements"]
+        if e["type"] in {"chart", "table"}
+    ]
+    prompt += f' Data slots: {json.dumps(data_slots)}. Also return "charts":{{"slot-id":{{"labels":["category"],"values":[number]}}}} and "tables":{{"slot-id":[["cell"]]}} where relevant. Use only numerical facts from the outline; if none exist, return empty arrays. Never retain example data.'
+    response = text_json(job.id, f"page-{index}", job.args["text_model"], prompt)
+    values = response.get("fields", {})
+    for element in layout["elements"]:
+        if element["type"] == "text" and element["editable"]:
+            value = values.get(element["id"])
+            if not isinstance(value, str):
+                raise ValueError("missing_text_slot")
+            element["text"] = value[: element["max_chars"]]
+            fit_text(element)
+        elif element["type"] == "chart" and element["editable"]:
+            chart = response.get("charts", {}).get(element["id"], {})
+            element["labels"], element["values"] = chart.get("labels", []), chart.get("values", [])
+        elif element["type"] == "table" and element["editable"]:
+            element["rows"] = response.get("tables", {}).get(element["id"], [])
+    layout["name"], layout["notes"] = (
+        deck.outline[index][:200],
+        str(response.get("notes", ""))[:10000],
+    )
+    # Save page text before any image call, so partial results survive failures.
+    with session() as db:
+        record = db.get(Deck, deck.id)
+        slides = deepcopy(record.slides)
+        if index < len(slides):
+            slides[index] = Slide.model_validate(layout).model_dump()
+        else:
+            slides.append(Slide.model_validate(layout).model_dump())
+        record.slides, record.version, record.updated = (
+            slides,
+            record.version + 1,
+            now(),
+        )
+        checkpoint = db.get(Job, job.id)
+        checkpoint.result = {**checkpoint.result, "deck_version": record.version}
+        db.commit()
+    image_slots = [e for e in layout["elements"] if e["type"] == "image" and e["editable"]]
+    if job.args.get("images") and image_slots and response.get("image_prompt"):
+        generated = call_model(
+            job.id,
+            f"image-{index}",
+            job.args["image_model"],
+            "image",
+            {
+                "prompt": str(response["image_prompt"])[:3000],
+                "n": 1,
+                "size": "1024x1024",
+                "response_format": "b64_json",
+            },
+        )
+        data = generated["data"][0].get("b64_json")
+        if not data:
+            # No arbitrary remote URLs are downloaded from model output.
+            raise ValueError("image_model_must_return_base64")
+        raw = base64.b64decode(data, validate=True)
+        media_type = validate_upload("image.png", raw, "image")
+        asset = store_asset(
+            job.owner,
+            f"slide-{index + 1}.png",
+            raw,
+            media_type,
+            "generated-image",
+            idempotency_key=f"{job.id}:image:{index}",
+        )
+        for element in image_slots:
+            element["asset_id"] = asset.id
+        with session() as db:
+            record = db.get(Deck, deck.id)
+            slides = deepcopy(record.slides)
+            slides[index] = Slide.model_validate(layout).model_dump()
+            record.slides, record.version, record.updated = (
+                slides,
+                record.version + 1,
+                now(),
+            )
+            checkpoint = db.get(Job, job.id)
+            checkpoint.result = {**checkpoint.result, "deck_version": record.version}
+            db.commit()
+    with session() as db:
+        record = db.get(Job, job.id)
+        record.cursor += 1
+        record.status = (
+            "complete" if job.kind == "rewrite" or record.cursor >= len(deck.outline) else "queued"
+        )
+        if record.cancel_requested:
+            record.status = "cancelled"
+        if record.status == "complete":
+            db.execute(update(Step).where(Step.job_id == job.id).values(response=None))
+        record.updated, record.result = (
+            now(),
+            {**record.result, "deck_id": deck.id, "completed_slides": index + 1},
+        )
+        db.commit()
+
+
+def fit_text(element: dict):
+    """Keep generated CJK text within its original box using a conservative fit."""
+    size = element["font_size"]
+    while size > 8:
+        lines, occupied = 1, 0.0
+        for character in element["text"]:
+            if character == "\n":
+                lines, occupied = lines + 1, 0.0
+                continue
+            width = size * (1 if unicodedata.east_asian_width(character) in {"W", "F"} else 0.6)
+            if occupied + width > element["w"]:
+                lines, occupied = lines + 1, 0.0
+            occupied += width
+        if lines * size * element.get("line_height", 1.25) <= element["h"]:
+            break
+        size = max(8, size - 1)
+    element["font_size"] = size
+
+
+def import_template(job: Job):
+    with session() as db:
+        asset = owned_asset(db, job.owner, job.args["asset_id"])
+    # Local parsing/preview checkpoints are also persisted before paid vision.
+    data = job.result.get("template")
+    if not data:
+        data = imported_template(asset, job.id)
+        with session() as db:
+            record = db.get(Job, job.id)
+            record.result = {"template": data}
+            db.commit()
+    if not data.get("previews"):
+        data["previews"] = template_previews(asset)
+        with session() as db:
+            record = db.get(Job, job.id)
+            record.result = {"template": data}
+            db.commit()
+    with session() as db:
+        preview = owned_asset(db, job.owner, data["previews"][0])
+    analysis = text_json(
+        job.id,
+        "template-vision",
+        job.args["text_model"],
+        'Analyze this presentation style. JSON {"description":"brief style description in Chinese","layout_advice":"text/image region advice"}. Preserve logos, colors and main layouts.',
+        [asset_path(preview).read_bytes()],
+    )
+    data["analysis"] = analysis
+    with session() as db:
+        template = Template(owner=job.owner, name=data["name"], data=data, confirmed=False)
+        db.add(template)
+        db.flush()
+        record = db.get(Job, job.id)
+        record.status, record.result, record.updated = (
+            "complete",
+            {"template_id": template.id},
+            now(),
+        )
+        db.execute(update(Step).where(Step.job_id == job.id).values(response=None))
+        db.commit()
+
+
+@celery.task(name="pipi.cleanup")
+def cleanup():
+    temporary = settings().storage_dir / "tmp"
+    cutoff = (now() - timedelta(hours=24)).timestamp()
+    if temporary.is_dir():
+        for path in temporary.iterdir():
+            if path.stat().st_mtime < cutoff:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+    with session() as db:
+        known = {asset.id for asset in db.scalars(select(Asset))}
+        timestamp = int(now().timestamp())
+        db.execute(delete(LoginState).where(LoginState.expires <= timestamp))
+        db.execute(delete(WebSession).where(WebSession.expires <= timestamp))
+        db.commit()
+    for folder in settings().storage_dir.iterdir():
+        if folder.is_dir() and folder.name.isdigit():
+            for file in folder.iterdir():
+                if file.is_file() and file.name not in known and file.stat().st_mtime < cutoff:
+                    file.unlink()

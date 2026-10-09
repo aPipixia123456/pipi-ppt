@@ -1,0 +1,9 @@
+# Merge into the existing private Prometheus deployment on the Compose network.
+scrape_configs:
+  - job_name: pipi-ppt
+    metrics_path: /internal/metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['api:8000']
+rule_files:
+  - /etc/prometheus/pipi-ppt-alerts.yml

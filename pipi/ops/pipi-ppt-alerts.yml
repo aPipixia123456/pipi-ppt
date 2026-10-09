@@ -1,0 +1,26 @@
+groups:
+  - name: pipi-ppt
+    rules:
+      - alert: PipiPptQueueDelayed
+        expr: pipi_oldest_queued_seconds > 300
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Pipi PPT queue has waited longer than five minutes
+      - alert: PipiPptUnknownConsumption
+        expr: sum(pipi_jobs{status="awaiting_confirmation"}) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Review unresolved model requests against pipiapi usage logs
+      - alert: PipiPptExportFailure
+        expr: delta(pipi_jobs{kind="export",status="failed"}[15m]) > 2
+        labels: {severity: warning}
+        annotations:
+          summary: Repeated Pipi PPT export failures
+      - alert: PipiPptUnavailable
+        expr: up{job="pipi-ppt"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: Pipi PPT metrics endpoint is unavailable

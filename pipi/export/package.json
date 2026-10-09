@@ -1,0 +1,7 @@
+{
+  "name": "pipi-ppt-export",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "dependencies": { "pptxgenjs": "^4.0.1" }
+}

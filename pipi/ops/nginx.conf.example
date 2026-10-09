@@ -1,0 +1,26 @@
+# Install a certificate for ppt.pipixia1.online before enabling this server.
+server {
+    listen 80;
+    server_name ppt.pipixia1.online;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name ppt.pipixia1.online;
+    ssl_certificate /etc/letsencrypt/live/ppt.pipixia1.online/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ppt.pipixia1.online/privkey.pem;
+    client_max_body_size 22m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # Auth callback query strings contain one-time credentials. Do not log them.
+    access_log off;
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 240s;
+        proxy_send_timeout 240s;
+    }
+}

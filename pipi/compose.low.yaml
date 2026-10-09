@@ -1,0 +1,24 @@
+services:
+  postgres:
+    mem_limit: 768m
+    cpus: 0.5
+  redis:
+    mem_limit: 256m
+    cpus: 0.25
+  api:
+    mem_limit: 512m
+    cpus: 0.5
+  worker:
+    command: ["celery", "-A", "pipi.backend.worker:celery", "worker", "--loglevel=WARNING", "-Q", "generation", "--concurrency=1", "--max-tasks-per-child=10"]
+    mem_limit: 1536m
+    cpus: 0.75
+  exporter:
+    command: ["celery", "-A", "pipi.backend.worker:celery", "worker", "--loglevel=WARNING", "-Q", "export", "--concurrency=1", "--max-tasks-per-child=5"]
+    mem_limit: 1536m
+    cpus: 0.75
+  scheduler:
+    mem_limit: 256m
+    cpus: 0.25
+  web:
+    mem_limit: 512m
+    cpus: 0.5

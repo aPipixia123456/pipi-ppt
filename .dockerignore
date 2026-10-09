@@ -42,3 +42,12 @@ servers/nextjs/node_modules
 servers/nextjs/.next
 
 container.db
+
+# Pipi deployment secrets and local verification output never enter the build context.
+**/.env
+**/.env.*
+/output
+**/.ruff_cache
+**/*.tsbuildinfo
+**/test-results
+**/playwright-report

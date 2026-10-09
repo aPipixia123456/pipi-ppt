@@ -1,0 +1,6 @@
+target-version = "py312"
+line-length = 100
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+# FastAPI declares request dependencies in function defaults by design.
+ignore = ["B008"]

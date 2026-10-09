@@ -35,3 +35,6 @@ servers/fastapi/dist/
 servers/fastapi/fastembed_cache/
 servers/fastapi/*.egg-info/
 pptxcollection/
+
+# Pipi PPT local test artifacts
+/output/

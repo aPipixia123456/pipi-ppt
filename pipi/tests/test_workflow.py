@@ -1,0 +1,169 @@
+import io
+import zipfile
+
+from pptx import Presentation
+
+
+def create(client, key="create-one"):
+    return client.post(
+        "/api/decks",
+        headers={"Idempotency-Key": key},
+        json={
+            "title": "中文产品汇报",
+            "topic": "产品发布计划",
+            "template_id": "general",
+            "slide_count": 5,
+            "text_model": "tested-text",
+            "images": False,
+        },
+    )
+
+
+def test_outline_generate_edit_and_editable_export(site):
+    client, calls, _ = site
+    from pipi.backend.worker import run_job
+
+    response = create(client)
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert create(client).json()["id"] == job["id"]
+    run_job(job["id"])
+    deck = client.get("/api/decks/" + job["deck_id"]).json()
+    assert len(deck["outline"]) == 5
+    generated = client.post(
+        f"/api/decks/{deck['id']}/generate",
+        headers={"Idempotency-Key": "generate-one"},
+        json={"text_model": "tested-text", "images": False},
+    )
+    assert generated.status_code == 200, generated.text
+    for _ in range(6):
+        run_job(generated.json()["id"])
+    assert len(calls) == 6  # Duplicate delivery must not call the model again.
+    deck = client.get("/api/decks/" + deck["id"]).json()
+    assert len(deck["slides"]) == 5
+    text = next(e for e in deck["slides"][0]["elements"] if e["type"] == "text")
+    text["text"] = "这段文字应当可以在 PowerPoint 和 WPS 中编辑"
+    body = {key: deck[key] for key in ("title", "version", "outline", "slides")}
+    assert client.put("/api/decks/" + deck["id"], json=body).status_code == 200
+    assert client.put("/api/decks/" + deck["id"], json=body).status_code == 409
+    export = client.post(
+        f"/api/decks/{deck['id']}/export", headers={"Idempotency-Key": "export-one"}
+    )
+    assert export.status_code == 200, export.text
+    run_job(export.json()["id"])
+    completed = next(j for j in client.get("/api/jobs").json() if j["id"] == export.json()["id"])
+    assert completed["status"] == "complete", completed
+    file = client.get("/api/assets/" + completed["result"]["asset_id"])
+    assert file.status_code == 200
+    presentation = Presentation(io.BytesIO(file.content))
+    assert len(presentation.slides) == 5
+    assert any("这段文字应当" in s.text for s in presentation.slides[0].shapes if s.has_text_frame)
+    assert len(calls) == 6  # Manual editing and export are free of inference.
+
+
+def test_two_user_isolation_files_jobs_and_csrf(site):
+    client, _, _ = site
+    first = create(client).json()
+    file = client.post(
+        "/api/assets?purpose=document",
+        files={"file": ("brief.txt", b"private material", "text/plain")},
+    ).json()
+    client.cookies.set("pipi_session", "browser-two")
+    second = create(client).json()
+    assert second["id"] != first["id"]
+    assert client.get("/api/decks/" + first["deck_id"]).status_code == 404
+    assert client.get("/api/assets/" + file["id"]).status_code == 404
+    assert client.post("/api/jobs/" + first["id"] + "/cancel").status_code == 404
+    client.headers["Origin"] = "https://attacker.example"
+    assert client.post("/api/jobs/" + second["id"] + "/cancel").status_code == 403
+
+
+def test_revocation_blocks_queued_models_and_cookie_access(site):
+    client, calls, disabled = site
+    job = create(client).json()
+    disabled.add(1)
+    from pipi.backend.db import Job, session
+    from pipi.backend.worker import run_job
+
+    run_job(job["id"])
+    with session() as db:
+        assert db.get(Job, job["id"]).status == "failed"
+    assert not calls
+    assert client.get("/api/decks").status_code == 401
+
+
+def test_upload_limits_archive_and_storage_quota(site):
+    client, _, _ = site
+    from pipi.backend.db import Account, Policy, session
+
+    assert (
+        client.post("/api/assets?purpose=image", files={"file": ("x.svg", b"<svg/>")}).status_code
+        == 400
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("ppt/vbaProject.bin", b"macro")
+    assert (
+        client.post(
+            "/api/assets?purpose=template", files={"file": ("x.pptx", output.getvalue())}
+        ).status_code
+        == 400
+    )
+    with session() as db:
+        policy = db.get(Policy, 1)
+        policy.data = {**policy.data, "upload_mb": 1}
+        db.get(Account, 1).stored_bytes = policy.data["storage_mb"] * 1024 * 1024
+        db.commit()
+    assert (
+        client.post(
+            "/api/assets?purpose=document", files={"file": ("x.txt", b"x" * (1024 * 1024 + 1))}
+        ).status_code
+        == 413
+    )
+    assert (
+        client.post("/api/assets?purpose=document", files={"file": ("x.txt", b"hello")}).status_code
+        == 413
+    )
+
+
+def test_all_six_presenton_templates_have_editable_layouts(site):
+    client, _, _ = site
+    templates = client.get("/api/templates").json()
+    assert len(templates) == 6
+    for template in templates:
+        response = client.get("/api/templates/" + template["id"])
+        assert response.status_code == 200, response.text
+        assert response.json()["layouts"]
+
+
+def test_timeout_and_restart_never_replay_paid_step(site, monkeypatch):
+    from datetime import timedelta
+
+    import httpx
+    from pipi.backend.db import Job, now, session
+    from pipi.backend.security import Gateway
+    from pipi.backend.worker import dispatch, run_job
+
+    client, calls, _ = site
+    job = create(client).json()
+    original = Gateway.request
+
+    def timeout(self, method, path, **kwargs):
+        if method == "POST":
+            calls.append("uncertain")
+            raise httpx.ReadTimeout("test timeout")
+        return original(self, method, path, **kwargs)
+
+    monkeypatch.setattr(Gateway, "request", timeout)
+    run_job(job["id"])
+    run_job(job["id"])
+    assert calls == ["uncertain"]
+    assert client.get("/api/jobs").json()[0]["status"] == "awaiting_confirmation"
+    assert client.post("/api/jobs/" + job["id"] + "/resume").status_code == 409
+    with session() as db:
+        record = db.get(Job, job["id"])
+        record.status, record.updated = "running", now() - timedelta(minutes=11)
+        db.commit()
+    dispatch()
+    assert client.get("/api/jobs").json()[0]["status"] == "awaiting_confirmation"
+    assert len(calls) == 1

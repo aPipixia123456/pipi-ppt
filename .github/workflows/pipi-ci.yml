@@ -1,0 +1,63 @@
+name: Pipi PPT verification
+on:
+  pull_request:
+    paths: ['pipi/**', '.github/workflows/pipi-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: pipi_test
+        ports: ['5432:5432']
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=15
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=5s --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: '1.3.14'}
+      - name: Install runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libreoffice-impress poppler-utils fonts-noto-cjk fonts-liberation
+          python -m pip install -r pipi/requirements.lock
+          cd pipi/export && bun install --frozen-lockfile
+      - name: Python lint and SQLite regression
+        run: |
+          python -m ruff check pipi/backend pipi/tests
+          python -m pytest pipi/tests -q
+      - name: PostgreSQL and real Celery queue regression
+        env:
+          PIPI_TEST_DATABASE_URL: postgresql+psycopg://postgres@localhost/pipi_test
+          PIPI_TEST_REDIS_URL: redis://localhost:6379/15
+        run: python -m pytest pipi/tests -q
+      - name: Website checks and browser workflow
+        working-directory: pipi/web
+        env:
+          CI: 'true'
+          PIPI_TEST_PYTHON: python
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run lint
+          bun run build
+          bunx playwright install --with-deps chromium
+          bun run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pipi-browser-test-results
+          path: output/playwright

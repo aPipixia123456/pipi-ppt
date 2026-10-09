@@ -1,0 +1,6 @@
+!/.env.example
+.ruff_cache/
+web/test-results/
+web/playwright-report/
+web/*.tsbuildinfo
+ops/.backup-*

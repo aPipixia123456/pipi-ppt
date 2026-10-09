@@ -1,0 +1,13 @@
+[Unit]
+Description=Pipi PPT encrypted database and assets backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pipi-ppt
+# Root-readable deployment environment, outside Git. Includes the public age recipient.
+EnvironmentFile=/etc/pipi-ppt.env
+ExecStart=/usr/bin/bash /opt/pipi-ppt/pipi/ops/backup.sh
+TimeoutStartSec=45min
+UMask=0077
