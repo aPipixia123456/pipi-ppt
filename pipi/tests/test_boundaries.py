@@ -30,6 +30,18 @@ def test_gateway_accepts_gzip_without_double_decoding(monkeypatch):
         settings.cache_clear()
 
 
+def test_gateway_rejects_non_object_json_response(monkeypatch):
+    from fastapi import HTTPException
+    from pipi.backend.security import Gateway
+
+    monkeypatch.setattr(
+        Gateway, "request", lambda *args, **kwargs: httpx.Response(200, json=["unexpected"])
+    )
+    with pytest.raises(HTTPException) as error:
+        Gateway().data("/v1/models")
+    assert error.value.status_code == 503
+
+
 def test_chunked_upload_is_rejected_before_reading_entire_body():
     from pipi.backend.body_limit import BodyLimit
 
