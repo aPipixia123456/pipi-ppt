@@ -5,7 +5,7 @@
 ## 代码位置与域名
 
 - PPT 独立 Git 仓库：`G:\pipi-ppt`，分支 `codex/pipi-ppt`，Presenton 基线 `2b5078ba266c67b16bc4f97943081e46d6dc0f21`。
-- 网站入口在 `pipi/`。复用 Presenton 六套模板、槽位与素材；为适配逐用户凭据和持久队列，生成调用、场景编辑器及导出器单独实现。原有 LICENSE、NOTICE 未修改。
+- 网站入口在 `pipi/`。复用 Presenton 十六套模板、槽位与素材；为适配逐用户凭据和持久队列，生成调用、场景编辑器及导出器单独实现。原有 LICENSE、NOTICE 未修改。
 - 主站授权补丁位于 `G:\newapi`，协议说明为 `docs/pipi-ppt.md`。主站原本存在大量其他未提交修改，本次没有打包或提交这些内容；部署应独立审查授权相关变更及其依赖。
 - 主站：`https://pipixia1.online`；PPT 域名：`https://ppt.pipixia1.online`；准确回调：`https://ppt.pipixia1.online/api/auth/callback`。DNS 和服务器证书已检查，应用上线情况见下方。
 

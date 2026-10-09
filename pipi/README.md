@@ -1,6 +1,6 @@
 # Pipi PPT
 
-独立网站实现，基于 Presenton `2b5078ba266c67b16bc4f97943081e46d6dc0f21`。上游代码、LICENSE、NOTICE 保留。生产入口位于 `pipi/`，复用上游六套 v2 模板的布局、文本槽位与颜色；Pipi 的账号、生成调度、场景编辑器和 PptxGenJS 导出器独立实现。未向公网暴露上游全局供应商配置、外部登录或未经许可确认的二进制导出包。
+独立网站实现，基于 Presenton `2b5078ba266c67b16bc4f97943081e46d6dc0f21`。上游代码、LICENSE、NOTICE 保留。生产入口位于 `pipi/`，复用上游十六套 v2 模板的布局、文本槽位与颜色；Pipi 的账号、生成调度、场景编辑器和 PptxGenJS 导出器独立实现。未向公网暴露上游全局供应商配置、外部登录或未经许可确认的二进制导出包。
 
 ## 运行
 
@@ -18,7 +18,7 @@
 
 ## 产品范围
 
-- 六套内置模板来自 Presenton：executive、modern、momentum、general、nova、signal。
+- 十六套内置模板来自 Presenton：executive、modern、momentum、general、nova、signal、civic、dynamic、editorial、horizon、landmark、mosaic、pulse、standard、swift、verdant。
 - 上传 PPTX，使用 python-pptx 读取文字、图片、主要版式、表格和单系列图表；LibreOffice 生成原始预览，视觉模型分析风格。确认转换后布局才进入个人模板库。
 - 支持主题、粘贴大纲和 PDF/DOCX/Markdown/TXT；可编辑大纲、页面文字、图片、表格、图表、形状、位置和尺寸；增删排序、AI 重写和演讲备注。
 - PPTX 使用原生文本、形状、表格和图表；PDF 由同一 PPTX 转换。普通编辑和导出不调用模型。
