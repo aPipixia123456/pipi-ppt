@@ -23,6 +23,7 @@ import {
   submitJob,
   Policy,
   Profile,
+  ReasoningEffort,
   Template,
   TemplateDetail,
 } from "./types";
@@ -63,6 +64,7 @@ export default function Home() {
   const [textModel, setTextModel] = useState("");
   const [imageModel, setImageModel] = useState("");
   const [images, setImages] = useState(true);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("auto");
   const [documents, setDocuments] = useState<{ id: string; name: string }[]>(
     [],
   );
@@ -222,6 +224,7 @@ export default function Home() {
               text_model: textModel,
               image_model: imageModel,
               images,
+              reasoning_effort: reasoningEffort,
               ...((extra as object) || {}),
             }
           : extra;
@@ -239,6 +242,7 @@ export default function Home() {
         text_model: textModel,
         image_model: imageModel,
         images,
+        reasoning_effort: reasoningEffort,
         document_ids: documents.map((d) => d.id),
       });
       if (job.deck_id) setDeck(await api<Deck>("/decks/" + job.deck_id));
@@ -257,6 +261,7 @@ export default function Home() {
         await submitJob("/templates/import", {
           asset_id: asset.id,
           text_model: textModel,
+          reasoning_effort: reasoningEffort,
         });
         setView("jobs");
       } else setDocuments((items) => [...items, asset]);
@@ -597,6 +602,23 @@ export default function Home() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    {t("思考强度", "Reasoning")}
+                    <select
+                      value={reasoningEffort}
+                      onChange={(e) =>
+                        setReasoningEffort(e.target.value as ReasoningEffort)
+                      }
+                    >
+                      <option value="auto">
+                        {t("自动（Kimi K3 高思考）", "Auto (high for Kimi K3)")}
+                      </option>
+                      <option value="off">{t("关闭", "Off")}</option>
+                      <option value="low">{t("低", "Low")}</option>
+                      <option value="medium">{t("中", "Medium")}</option>
+                      <option value="high">{t("高", "High")}</option>
+                    </select>
+                  </label>
                   <label className="check">
                     <input
                       type="checkbox"
@@ -633,8 +655,8 @@ export default function Home() {
                 <div className="generate-footer">
                   <p>
                     {t(
-                      "默认 16:9 · 大纲确认后开始生成 · 按实际模型调用计费",
-                      "16:9 · Review your outline first · Pay for actual model calls",
+                      "默认 16:9 · Kimi K3 自动使用高思考 · 思考强度越高消耗可能越高",
+                      "16:9 · Kimi K3 uses high reasoning in Auto · Higher reasoning may cost more",
                     )}
                   </p>
                   <button

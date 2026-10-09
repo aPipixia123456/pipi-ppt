@@ -65,6 +65,7 @@ class CreateDeck(BaseModel):
     text_model: str = Field(min_length=1, max_length=160)
     image_model: str = Field(default="", max_length=160)
     images: bool = True
+    reasoning_effort: Literal["auto", "off", "low", "medium", "high"] = "auto"
     document_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
@@ -79,6 +80,7 @@ class Generate(BaseModel):
     text_model: str = Field(min_length=1, max_length=160)
     image_model: str = Field(default="", max_length=160)
     images: bool = True
+    reasoning_effort: Literal["auto", "off", "low", "medium", "high"] = "auto"
 
 
 class Rewrite(Generate):

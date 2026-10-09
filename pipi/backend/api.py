@@ -4,6 +4,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import timezone
+from typing import Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
@@ -391,6 +392,7 @@ def delete_asset(asset_id: str, auth=Depends(current_session)):
 class ImportTemplate(BaseModel):
     asset_id: str = Field(max_length=36)
     text_model: str = Field(min_length=1, max_length=160)
+    reasoning_effort: Literal["auto", "off", "low", "medium", "high"] = "auto"
 
 
 @app.post("/api/templates/import")

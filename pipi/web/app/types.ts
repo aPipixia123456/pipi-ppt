@@ -24,6 +24,7 @@ export type Element = {
   labels: string[];
   values: number[];
 };
+export type ReasoningEffort = "auto" | "off" | "low" | "medium" | "high";
 export type Slide = {
   id: string;
   name: string;

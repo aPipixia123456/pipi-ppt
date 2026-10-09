@@ -145,6 +145,28 @@ def test_text_json_handles_common_model_content_shapes(monkeypatch):
     assert invalid["_pipi_warnings"][0]["code"] == "invalid_model_json"
 
 
+def test_text_json_enables_kimi_reasoning_without_provider_specific_fields(monkeypatch):
+    from pipi.backend.generation import text_json
+
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+    monkeypatch.setattr("pipi.backend.generation.call_model", capture)
+
+    assert text_json("job", "step", "kimi-k3", "prompt") == {"ok": True}
+    body = captured["args"][4]
+    assert body["reasoning_effort"] == "high"
+    assert body["max_tokens"] == 9000
+    assert "extra_body" not in body
+
+    text_json("job", "step-off", "kimi-k3", "prompt", reasoning_effort="off")
+    off_body = captured["args"][4]
+    assert off_body["reasoning_effort"] == "none"
+
+
 def test_invalid_optional_image_does_not_fail_page_generation(site, monkeypatch):
     client, _, _ = site
     from pipi.backend.worker import run_job
