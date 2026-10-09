@@ -26,6 +26,16 @@ BUILTINS = {
     "general": "教学课件 / Education",
     "nova": "产品介绍 / Product",
     "signal": "数据报告 / Data",
+    "civic": "政务宣讲 / Civic",
+    "dynamic": "主题演讲 / Keynotes",
+    "editorial": "杂志风 / Editorial",
+    "horizon": "地产展示 / Real estate",
+    "landmark": "建筑发布 / Landmarks",
+    "mosaic": "创意展示 / Creative",
+    "pulse": "医疗健康 / Healthcare",
+    "standard": "商务通用 / Standard",
+    "swift": "简明快报 / Briefings",
+    "verdant": "自然环保 / Nature",
 }
 
 

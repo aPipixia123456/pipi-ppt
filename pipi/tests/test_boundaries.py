@@ -103,8 +103,10 @@ def test_admin_template_configuration_and_access(site, monkeypatch):
         return response
 
     monkeypatch.setattr(Gateway, "request", administrator)
+    from pipi.backend.templates import BUILTINS
+
     config = client.get("/api/admin").json()
-    assert len(config["templates"]) == 6
+    assert len(config["templates"]) == len(BUILTINS)
     assert client.put("/api/admin/templates/executive?enabled=false").status_code == 200
     assert all(t["id"] != "executive" for t in client.get("/api/templates").json())
     assert client.get("/api/templates/executive").status_code == 404
