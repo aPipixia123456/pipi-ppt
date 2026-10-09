@@ -61,6 +61,37 @@ def test_outline_generate_edit_and_editable_export(site):
     assert len(calls) == 6  # Manual editing and export are free of inference.
 
 
+def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
+    client, _, _ = site
+    from pipi.backend.worker import run_job
+
+    outline_job = create(client, "missing-slot-create").json()
+    run_job(outline_job["id"])
+    deck = client.get("/api/decks/" + outline_job["deck_id"]).json()
+    generated = client.post(
+        f"/api/decks/{deck['id']}/generate",
+        headers={"Idempotency-Key": "missing-slot-generate"},
+        json={"text_model": "tested-text", "images": False},
+    )
+    assert generated.status_code == 200, generated.text
+    run_job(generated.json()["id"])  # page-0 uses the normal fake response.
+
+    def malformed_page(*args, **kwargs):
+        return {
+            "fields": {"example text copied as a key": "Recovered page content"},
+            "notes": "Recovered without another model call",
+        }
+
+    monkeypatch.setattr("pipi.backend.worker.text_json", malformed_page)
+    for _ in range(4):
+        run_job(generated.json()["id"])
+
+    job = next(item for item in client.get("/api/jobs").json() if item["id"] == generated.json()["id"])
+    assert job["status"] == "complete"
+    assert job["result"]["warnings"][0]["code"] == "missing_text_slots"
+    assert len(client.get("/api/decks/" + deck["id"]).json()["slides"]) == 5
+
+
 def test_two_user_isolation_files_jobs_and_csrf(site):
     client, _, _ = site
     first = create(client).json()

@@ -241,7 +241,7 @@ def generate_page(job: Job, deck: Deck):
         for e in layout["elements"]
         if e["type"] == "text" and e["editable"]
     ]
-    prompt = f'Slide {index + 1}. Outline: {deck.outline[index]}. Instructions: {job.args.get("instruction", "")}. Template text slots: {json.dumps(fields, ensure_ascii=False)}. Return JSON {{"fields":{{"slot-id":"text"}},"notes":"speaker notes","image_prompt":"optional illustration"}}. Fill every text slot, respect max_chars, no HTML. Keep decorative text unchanged.'
+    prompt = f'Slide {index + 1}. Outline: {deck.outline[index]}. Instructions: {job.args.get("instruction", "")}. Template text slots: {json.dumps(fields, ensure_ascii=False)}. Return JSON with a "fields" object, "notes", and optional "image_prompt". Copy each slot "id" verbatim as a fields key (for example, "slot-4"); never use example text as a key. Include every slot key once, respect max_chars, no HTML. If a slot should stay unchanged, return its example value.'
     data_slots = [
         {"id": e["id"], "type": e["type"]}
         for e in layout["elements"]
@@ -250,11 +250,32 @@ def generate_page(job: Job, deck: Deck):
     prompt += f' Data slots: {json.dumps(data_slots)}. Also return "charts":{{"slot-id":{{"labels":["category"],"values":[number]}}}} and "tables":{{"slot-id":[["cell"]]}} where relevant. Use only numerical facts from the outline; if none exist, return empty arrays. Never retain example data.'
     response = text_json(job.id, f"page-{index}", job.args["text_model"], prompt)
     values = response.get("fields", {})
+    if not isinstance(values, dict):
+        values = {}
+    editable_ids = {
+        element["id"]
+        for element in layout["elements"]
+        if element["type"] == "text" and element["editable"]
+    }
+    # Models occasionally copy an example string into the key instead of using
+    # the requested slot id. If there is only one such value and one missing
+    # slot, recover it without making another paid model call. Other missing
+    # slots keep the template's existing text so the job can continue safely.
+    unmatched_values = [
+        value
+        for key, value in values.items()
+        if str(key) not in editable_ids and isinstance(value, str)
+    ]
+    missing_slots = []
     for element in layout["elements"]:
         if element["type"] == "text" and element["editable"]:
             value = values.get(element["id"])
             if not isinstance(value, str):
-                raise ValueError("missing_text_slot")
+                missing_slots.append(element["id"])
+                if len(missing_slots) == 1 and len(unmatched_values) == 1:
+                    value = unmatched_values[0]
+                else:
+                    value = element.get("text", "")
             element["text"] = value[: element["max_chars"]]
             fit_text(element)
         elif element["type"] == "chart" and element["editable"]:
@@ -280,7 +301,12 @@ def generate_page(job: Job, deck: Deck):
             now(),
         )
         checkpoint = db.get(Job, job.id)
-        checkpoint.result = {**checkpoint.result, "deck_version": record.version}
+        result = {**checkpoint.result, "deck_version": record.version}
+        if missing_slots:
+            warnings = list(result.get("warnings", []))
+            warnings.append({"code": "missing_text_slots", "slots": missing_slots})
+            result["warnings"] = warnings
+        checkpoint.result = result
         db.commit()
     image_slots = [e for e in layout["elements"] if e["type"] == "image" and e["editable"]]
     if job.args.get("images") and image_slots and response.get("image_prompt"):
