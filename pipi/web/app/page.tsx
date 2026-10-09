@@ -613,7 +613,9 @@ export default function Home() {
                       <option value="auto">
                         {t("自动（Kimi K3 高思考）", "Auto (high for Kimi K3)")}
                       </option>
-                      <option value="off">{t("关闭", "Off")}</option>
+                      <option value="off">
+                        {t("关闭（模型支持时）", "Off when supported")}
+                      </option>
                       <option value="low">{t("低", "Low")}</option>
                       <option value="medium">{t("中", "Medium")}</option>
                       <option value="high">{t("高", "High")}</option>
@@ -655,8 +657,8 @@ export default function Home() {
                 <div className="generate-footer">
                   <p>
                     {t(
-                      "默认 16:9 · Kimi K3 自动使用高思考 · 思考强度越高消耗可能越高",
-                      "16:9 · Kimi K3 uses high reasoning in Auto · Higher reasoning may cost more",
+                      "默认 16:9 · Kimi K3 自动使用高思考 · 渠道不支持时使用默认策略 · 高思考可能更耗额度",
+                      "16:9 · Kimi K3 uses high reasoning in Auto · Unsupported channels use their default · Higher reasoning may cost more",
                     )}
                   </p>
                   <button
