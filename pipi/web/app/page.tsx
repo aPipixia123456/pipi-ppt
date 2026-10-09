@@ -87,7 +87,12 @@ export default function Home() {
       setWorks(nextWorks);
       setJobs(nextJobs);
       setTextModel((current) => current || nextProfile.models.text[0] || "");
-      setImageModel((current) => current || nextProfile.models.image[0] || "");
+      setImageModel((current) =>
+        nextProfile.models.image.includes(current)
+          ? current
+          : nextProfile.models.image[0] || "",
+      );
+      setImages((current) => current && nextProfile.models.image.length > 0);
     },
     [],
   );
@@ -595,6 +600,7 @@ export default function Home() {
                     <input
                       type="checkbox"
                       checked={images}
+                      disabled={busy || profile.models.image.length === 0}
                       onChange={(e) => setImages(e.target.checked)}
                     />
                     {t("AI 配图", "AI images")}

@@ -267,6 +267,11 @@ def generate_page(job: Job, deck: Deck):
         if str(key) not in editable_ids and isinstance(value, str)
     ]
     missing_slots = []
+    image_slots = [
+        element
+        for element in layout["elements"]
+        if element["type"] == "image" and element["editable"]
+    ]
     for element in layout["elements"]:
         if element["type"] == "text" and element["editable"]:
             value = values.get(element["id"])
@@ -302,14 +307,16 @@ def generate_page(job: Job, deck: Deck):
         )
         checkpoint = db.get(Job, job.id)
         result = {**checkpoint.result, "deck_version": record.version}
+        warnings = list(result.get("warnings", []))
         if missing_slots:
-            warnings = list(result.get("warnings", []))
             warnings.append({"code": "missing_text_slots", "slots": missing_slots})
+        if job.args.get("images") and image_slots and response.get("image_prompt") and not job.args.get("image_model"):
+            warnings.append({"code": "image_model_unavailable"})
+        if warnings:
             result["warnings"] = warnings
         checkpoint.result = result
         db.commit()
-    image_slots = [e for e in layout["elements"] if e["type"] == "image" and e["editable"]]
-    if job.args.get("images") and image_slots and response.get("image_prompt"):
+    if job.args.get("images") and image_slots and response.get("image_prompt") and job.args.get("image_model"):
         generated = call_model(
             job.id,
             f"image-{index}",

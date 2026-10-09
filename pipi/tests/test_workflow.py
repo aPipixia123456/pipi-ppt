@@ -71,7 +71,7 @@ def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
     generated = client.post(
         f"/api/decks/{deck['id']}/generate",
         headers={"Idempotency-Key": "missing-slot-generate"},
-        json={"text_model": "tested-text", "images": False},
+        json={"text_model": "tested-text", "image_model": "", "images": True},
     )
     assert generated.status_code == 200, generated.text
     run_job(generated.json()["id"])  # page-0 uses the normal fake response.
@@ -80,6 +80,7 @@ def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
         return {
             "fields": {"example text copied as a key": "Recovered page content"},
             "notes": "Recovered without another model call",
+            "image_prompt": "Optional illustration",
         }
 
     monkeypatch.setattr("pipi.backend.worker.text_json", malformed_page)
@@ -88,7 +89,9 @@ def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
 
     job = next(item for item in client.get("/api/jobs").json() if item["id"] == generated.json()["id"])
     assert job["status"] == "complete"
-    assert job["result"]["warnings"][0]["code"] == "missing_text_slots"
+    warning_codes = {warning["code"] for warning in job["result"]["warnings"]}
+    assert "missing_text_slots" in warning_codes
+    assert "image_model_unavailable" in warning_codes
     assert len(client.get("/api/decks/" + deck["id"]).json()["slides"]) == 5
 
 
