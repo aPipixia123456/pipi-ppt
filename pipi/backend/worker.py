@@ -507,8 +507,8 @@ def generate_page(job: Job, deck: Deck):
             element["text"] = value[: element["max_chars"]]
             fit_text(element)
         elif element["type"] == "chart" and element["editable"]:
-            labels, values, invalid = _safe_chart_data(charts.get(element["id"]))
-            element["labels"], element["values"] = labels, values
+            labels, chart_values, invalid = _safe_chart_data(charts.get(element["id"]))
+            element["labels"], element["values"] = labels, chart_values
             if invalid:
                 data_warnings.append({"code": "invalid_chart_data", "slot": element["id"]})
         elif element["type"] == "table" and element["editable"]:

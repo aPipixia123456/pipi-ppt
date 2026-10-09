@@ -62,6 +62,40 @@ def test_outline_generate_edit_and_editable_export(site):
     assert len(calls) == 6  # Manual editing and export are free of inference.
 
 
+def test_chart_layout_keeps_text_generation_running(site):
+    client, _, _ = site
+    from pipi.backend.worker import run_job
+
+    response = client.post(
+        "/api/decks",
+        headers={"Idempotency-Key": "chart-layout-create"},
+        json={
+            "title": "财报图表",
+            "topic": "季度财报趋势",
+            "template_id": "signal",
+            "slide_count": 13,
+            "text_model": "tested-text",
+            "images": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    outline_job = response.json()
+    run_job(outline_job["id"])
+    deck = client.get("/api/decks/" + outline_job["deck_id"]).json()
+    generated = client.post(
+        f"/api/decks/{deck['id']}/generate",
+        headers={"Idempotency-Key": "chart-layout-generate"},
+        json={"text_model": "tested-text", "images": False},
+    )
+    assert generated.status_code == 200, generated.text
+    for _ in range(14):
+        run_job(generated.json()["id"])
+
+    job = next(item for item in client.get("/api/jobs").json() if item["id"] == generated.json()["id"])
+    assert job["status"] == "complete", job
+    assert len(client.get("/api/decks/" + deck["id"]).json()["slides"]) == 13
+
+
 def test_missing_text_slot_does_not_fail_the_generation(site, monkeypatch):
     client, _, _ = site
     from pipi.backend.worker import run_job
