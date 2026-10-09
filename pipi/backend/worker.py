@@ -456,6 +456,11 @@ def generate_page(job: Job, deck: Deck):
             if isinstance(warning, dict) and isinstance(warning.get("code"), str)
         ]
     values = _field_values(response.get("fields"))
+    # Keep the page checkpoint usable if an older worker or a provider adapter
+    # returns the raw list form after the normalizer. The page must fall back to
+    # deterministic copy rather than crash on ``values.get``.
+    if not isinstance(values, dict):
+        values = _field_values(values)
     editable_ids = {
         element["id"]
         for element in layout["elements"]

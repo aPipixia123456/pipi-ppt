@@ -126,6 +126,14 @@ def test_outline_response_normalizes_structured_and_short_model_output():
     assert {warning["code"] for warning in warnings} == {"outline_normalized"}
 
 
+def test_field_values_accepts_list_form():
+    from pipi.backend.worker import _field_values
+
+    assert _field_values([{"id": "slot-1", "text": "中文标题"}]) == {
+        "slot-1": "中文标题"
+    }
+
+
 def test_text_json_handles_common_model_content_shapes(monkeypatch):
     from pipi.backend.generation import text_json
 
