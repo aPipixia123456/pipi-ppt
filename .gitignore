@@ -38,3 +38,6 @@ pptxcollection/
 
 # Pipi PPT local test artifacts
 /output/
+
+# Local review copy of third-party agent skills
+.vendor/
