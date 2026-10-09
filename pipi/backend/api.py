@@ -250,7 +250,13 @@ def templates(auth=Depends(current_session)):
         }
         personal = db.scalars(select(Template).where(Template.owner == auth.owner)).all()
     builtins = [
-        {"id": key, "name": name, "confirmed": True, "builtin": True}
+        {
+            "id": key,
+            "name": name,
+            "confirmed": True,
+            "builtin": True,
+            "thumbnail": f"{key}/static/thumbnail.png",
+        }
         for key, name in BUILTINS.items()
         if key not in hidden
     ]

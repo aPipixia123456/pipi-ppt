@@ -54,6 +54,7 @@ export type Template = {
   name: string;
   confirmed: boolean;
   builtin: boolean;
+  thumbnail?: string;
 };
 export type TemplateDetail = {
   name: string;

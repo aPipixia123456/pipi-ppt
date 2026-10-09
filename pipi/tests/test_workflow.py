@@ -188,6 +188,8 @@ def test_all_builtin_templates_have_editable_layouts(site):
     templates = client.get("/api/templates").json()
     assert len(templates) == len(BUILTINS)
     for template in templates:
+        assert template["thumbnail"] == f'{template["id"]}/static/thumbnail.png'
+        assert client.get("/api/template-assets/" + template["thumbnail"]).status_code == 200
         response = client.get("/api/templates/" + template["id"])
         assert response.status_code == 200, response.text
         assert response.json()["layouts"]

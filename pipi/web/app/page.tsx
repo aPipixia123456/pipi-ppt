@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowUpRight,
@@ -1154,11 +1155,22 @@ function TemplateGrid({
           key={template.id}
         >
           <button
-            className={`template-cover theme-${i % 6}`}
+            className={`template-cover theme-${i % 6} ${template.thumbnail ? "has-thumbnail" : ""}`}
             onClick={() =>
               template.confirmed ? choose(template.id) : preview(template)
             }
           >
+            {template.thumbnail && (
+              <Image
+                className="template-thumbnail"
+                src={`/api/template-assets/${template.thumbnail}`}
+                alt=""
+                aria-hidden="true"
+                fill
+                unoptimized
+                sizes="(max-width: 900px) 100vw, 33vw"
+              />
+            )}
             <span>PIPI / {String(i + 1).padStart(2, "0")}</span>
             <h3>{template.name.split(" / ")[0]}</h3>
             <div className="template-lines">
