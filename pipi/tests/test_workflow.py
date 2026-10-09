@@ -126,10 +126,12 @@ def test_upload_limits_archive_and_storage_quota(site):
     )
 
 
-def test_all_six_presenton_templates_have_editable_layouts(site):
+def test_all_builtin_templates_have_editable_layouts(site):
+    from pipi.backend.templates import BUILTINS
+
     client, _, _ = site
     templates = client.get("/api/templates").json()
-    assert len(templates) == 6
+    assert len(templates) == len(BUILTINS)
     for template in templates:
         response = client.get("/api/templates/" + template["id"])
         assert response.status_code == 200, response.text
