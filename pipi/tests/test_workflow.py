@@ -160,6 +160,26 @@ def test_outline_response_normalizes_structured_and_short_model_output():
     assert {warning["code"] for warning in warnings} == {"outline_normalized"}
 
 
+def test_outline_fallback_keeps_financial_story_specific_and_non_repetitive():
+    from pipi.backend.worker import normalize_outline_response
+
+    outline, warnings = normalize_outline_response(
+        {"_pipi_warnings": [{"code": "invalid_model_json"}]},
+        10,
+        "制作一个 比亚迪2025年第三季度财报PPT\n<web-research>官方资料</web-research>",
+    )
+
+    assert len(outline) == 10
+    assert len(set(outline)) == 10
+    assert "收入与利润指标需要一起看" in outline[1]
+    assert "围绕“制作一个" not in outline[0]
+    assert "比亚迪2025年第三季度财报PPT" in outline[-1]
+    assert {warning["code"] for warning in warnings} == {
+        "invalid_model_json",
+        "outline_normalized",
+    }
+
+
 def test_field_values_accepts_list_form():
     from pipi.backend.worker import _field_values
 
@@ -185,6 +205,25 @@ def test_text_json_handles_common_model_content_shapes(monkeypatch):
                 ]
             },
             {"choices": [{"message": {"content": "这不是 JSON"}}]},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [],
+                            "reasoning_content": '思考后输出：```json\n{"outline":["备用大纲"]}\n```',
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [{"type": "output_text", "output_text": '{"ok":true}'}]
+                        }
+                    }
+                ]
+            },
         ]
     )
     monkeypatch.setattr(
@@ -194,6 +233,34 @@ def test_text_json_handles_common_model_content_shapes(monkeypatch):
     assert text_json("job", "step-1", "model", "prompt") == {"outline": ["一页"]}
     invalid = text_json("job", "step-2", "model", "prompt")
     assert invalid["_pipi_warnings"][0]["code"] == "invalid_model_json"
+    assert text_json("job", "step-3", "model", "prompt") == {"outline": ["备用大纲"]}
+    assert text_json("job", "step-4", "model", "prompt") == {"ok": True}
+
+
+def test_gateway_429_retries_once_without_replaying_unknown_failures(monkeypatch):
+    import httpx
+    from pipi.backend.generation import _gateway_request
+
+    responses = iter(
+        [
+            httpx.Response(429, headers={"Retry-After": "1"}),
+            httpx.Response(200, json={"ok": True}),
+        ]
+    )
+    calls = []
+
+    class Gateway:
+        def request(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return next(responses)
+
+    delays = []
+    monkeypatch.setattr("pipi.backend.generation.time.sleep", delays.append)
+    response = _gateway_request(Gateway(), "POST", "/v1/chat/completions", json={"x": 1})
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert delays == [1.0]
 
 
 def test_text_json_enables_kimi_reasoning_without_provider_specific_fields(monkeypatch):

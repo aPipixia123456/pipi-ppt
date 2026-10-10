@@ -1461,6 +1461,10 @@ function errorText(error: string, t: (zh: string, en: string) => string) {
       "账户额度不足，请前往 pipiapi 查看。",
       "Insufficient quota. Check your pipiapi account.",
     ],
+    gateway_rejected_429: [
+      "当前模型通道被限流或额度已用尽。请稍后恢复，或切换到其他可用模型后再恢复任务。",
+      "The selected model channel is rate-limited or out of quota. Wait for it to recover, or switch to another available model before resuming.",
+    ],
   };
   return messages[error]
     ? t(...messages[error])

@@ -1,5 +1,6 @@
 import base64
 import json
+import time
 
 import httpx
 from fastapi import HTTPException
@@ -18,17 +19,35 @@ def _invalid_json_response(code: str) -> dict:
     return {"_pipi_warnings": [{"code": code}]}
 
 
+def _content_fragments(content) -> list[str]:
+    """Extract text from OpenAI, Responses and provider-specific content blocks."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        fragments: list[str] = []
+        for part in content:
+            fragments.extend(_content_fragments(part))
+        return fragments
+    if not isinstance(content, dict):
+        return []
+    for key in ("text", "output_text", "content", "value", "reasoning_content"):
+        if key in content:
+            return _content_fragments(content[key])
+    return []
+
+
 def _parse_json_content(content) -> dict:
     if isinstance(content, dict):
-        return content
-    if isinstance(content, list):
-        fragments = []
-        for part in content:
-            if isinstance(part, str):
-                fragments.append(part)
-            elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                fragments.append(part["text"])
+        # Some OpenAI-compatible gateways return a decoded JSON object, while
+        # others wrap the actual text in an output block.
+        if any(key in content for key in ("outline", "fields", "charts", "tables", "notes", "image_prompt")):
+            return content
+        fragments = _content_fragments(content)
+        if not fragments:
+            return _invalid_json_response("invalid_model_content")
         content = "".join(fragments)
+    if isinstance(content, list):
+        content = "".join(_content_fragments(content))
     if not isinstance(content, str):
         return _invalid_json_response("invalid_model_content")
 
@@ -49,6 +68,62 @@ def _parse_json_content(content) -> dict:
         if isinstance(parsed, list):
             return {"outline": parsed}
     return _invalid_json_response("invalid_model_json")
+
+
+def _response_json(result: dict) -> dict:
+    """Parse the useful text even when a provider separates reasoning/output blocks."""
+    if not isinstance(result, dict):
+        return _invalid_json_response("invalid_model_content")
+
+    candidates = []
+    choices = result.get("choices", [])
+    if isinstance(choices, list) and choices:
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message")
+        if isinstance(message, dict):
+            candidates.extend(
+                message.get(key)
+                for key in ("content", "output_text", "text", "reasoning_content")
+                if message.get(key) is not None
+            )
+        candidates.extend(
+            choice.get(key)
+            for key in ("content", "output_text", "text", "reasoning_content")
+            if choice.get(key) is not None
+        )
+    candidates.extend(
+        result.get(key)
+        for key in ("output_text", "content", "text", "reasoning_content", "output")
+        if result.get(key) is not None
+    )
+    for candidate in candidates:
+        parsed = _parse_json_content(candidate)
+        if isinstance(parsed, dict) and not parsed.get("_pipi_warnings"):
+            return parsed
+    return _invalid_json_response("invalid_model_json")
+
+
+def _retry_after_seconds(response) -> float:
+    value = response.headers.get("Retry-After", "")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        seconds = 1.0
+    return min(max(seconds, 0.2), 3.0)
+
+
+def _gateway_request(gateway, method: str, path: str, **kwargs):
+    """Retry one explicit 429 rejection after a short bounded cooldown.
+
+    A 429 is a deterministic gateway rejection, so the first request cannot
+    have produced a billable model result. One retry lets the gateway choose a
+    different cooled-down channel without replaying timeouts or unknown calls.
+    """
+    response = gateway.request(method, path, **kwargs)
+    if response.status_code == 429:
+        time.sleep(_retry_after_seconds(response))
+        response = gateway.request(method, path, **kwargs)
+    return response
 
 
 def available_models(gateway, policy: dict) -> dict:
@@ -120,7 +195,8 @@ def call_model(job_id: str, name: str, model: str, kind: str, body: dict) -> dic
         db.commit()
         step_id = step.id
     try:
-        response = gateway.request(
+        response = _gateway_request(
+            gateway,
             "POST",
             "/v1/images/generations" if kind == "image" else "/v1/chat/completions",
             headers={"X-Pipi-Job-ID": job_id, "X-Pipi-Step-ID": name},
@@ -277,7 +353,8 @@ def search_json(job_id: str, step: str, model: str, query: str):
                 "query": query[:500],
                 "commands": {"search_query": [{"q": query[:500]}]},
             }
-            response = gateway.request(
+            response = _gateway_request(
+                gateway,
                 "POST",
                 "/v1/alpha/search",
                 headers={"X-Pipi-Job-ID": job_id, "X-Pipi-Step-ID": step},
@@ -343,6 +420,4 @@ def text_json(
         "text",
         body,
     )
-    choices = result.get("choices", []) if isinstance(result, dict) else []
-    message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
-    return _parse_json_content(message.get("content"))
+    return _response_json(result)

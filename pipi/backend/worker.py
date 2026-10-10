@@ -15,7 +15,12 @@ from .config import settings
 from .conversion import export_deck, template_previews
 from .db import Asset, Deck, Job, LoginState, Policy, Step, Template, WebSession, now, session
 from .generation import UncertainCall, call_model, search_json, text_json
-from .ppt_skill import SKILL_NAME, build_outline_prompt, build_page_prompt, validate_story_outline
+from .ppt_skill import (
+    SKILL_NAME,
+    build_outline_prompt,
+    build_page_prompt,
+    validate_story_outline,
+)
 from .research import (
     build_research_query,
     citation_notes,
@@ -111,28 +116,59 @@ def normalize_outline_response(result: dict, slide_count: int, source: str) -> t
         warnings.append({"code": "outline_truncated", "received": len(outline), "kept": slide_count})
         outline = outline[:slide_count]
 
-    subject = next(
-        (line.strip(" -*#\t")[:80] for line in source.splitlines() if line.strip()),
-        "主题内容",
-    )
-    fallback_topics = [
-        "主题与目标",
-        "背景与现状",
-        "关键问题",
-        "核心方案",
-        "实施计划",
-        "资源与预算",
-        "风险与应对",
-        "指标与验收",
-        "案例与证据",
-        "总结与下一步",
-    ]
+    subject = _outline_subject(source)
     while len(outline) < slide_count:
-        topic = fallback_topics[len(outline) % len(fallback_topics)]
-        outline.append(f"{topic} — 围绕“{subject}”补充关键内容与行动建议")
+        outline.append(_fallback_outline_item(len(outline), slide_count, subject, source))
     if warnings or len(outline) != len(raw):
         warnings.append({"code": "outline_normalized"})
     return outline, warnings
+
+
+def _outline_subject(source: str) -> str:
+    for line in source.splitlines():
+        candidate = line.strip(" -*#\t")
+        if not candidate or candidate.startswith("<"):
+            continue
+        candidate = re.sub(r"^(制作|生成|创建|做)\s*(一个|一份|一套)?\s*", "", candidate)
+        return candidate[:80] or "主题内容"
+    return "主题内容"
+
+
+def _fallback_outline_item(index: int, slide_count: int, subject: str, source: str) -> str:
+    financial = any(
+        keyword in source.casefold()
+        for keyword in ("财报", "季度", "营收", "净利润", "现金流", "revenue", "earnings")
+    )
+    if financial:
+        cards = [
+            ("先明确阅读框架：本季表现、累计表现与关键变量", "Hook", "建立看财报的共同问题", "收入、利润、现金流和经营变量", "结论卡片"),
+            ("本季经营：收入与利润指标需要一起看", "Context", "区分规模变化和盈利变化", "本季核心指标及同比、环比口径", "双轴指标图"),
+            ("累计表现：增长来源与质量如何变化", "Tension", "把单季波动放回全年进程", "前三季度累计数据与结构变化", "累计趋势图"),
+            ("现金流与资产负债：经营安全边界", "Insight", "判断利润是否转化为现金", "经营现金流、负债和周转线索", "现金流瀑布"),
+            ("研发与产品：投入如何转化为竞争力", "Mechanism", "连接投入、产品和长期回报", "研发投入、技术路线和产品动作", "投入产出关系图"),
+            ("市场与竞争：外部环境带来的压力", "Proof", "解释业绩变化的外部变量", "行业竞争、价格和需求变化", "竞争对比图"),
+            ("效率与成本：利润变化的驱动拆解", "Roadmap", "找到下一步改善利润的抓手", "成本、毛利、费用和效率线索", "驱动树"),
+            ("风险与验证：哪些数据仍需跟踪", "Proof", "把不确定性转成观察清单", "风险假设、证据缺口和验证指标", "风险矩阵"),
+            ("管理启示：下一阶段的优先事项", "Decision", "把分析落到经营动作", "产品、市场、成本和现金的优先级", "优先级矩阵"),
+            ("结论与行动：形成可执行的判断", "Decision", "明确结论、责任和下一步", "结论、行动建议和后续跟踪", "行动清单"),
+        ]
+    else:
+        cards = [
+            ("先明确问题与目标", "Hook", "让观众知道这份演示要解决什么", "目标、受众和成功标准", "目标卡片"),
+            ("背景变化改变了什么", "Context", "建立共同背景和范围", "现状、趋势和关键约束", "趋势图"),
+            ("关键矛盾在哪里", "Tension", "把问题从现象收敛到核心矛盾", "问题、影响和优先级", "问题树"),
+            ("证据说明了什么", "Insight", "用证据支持判断", "事实、数据和可验证假设", "数据展板"),
+            ("方案如何解决问题", "Mechanism", "解释方案的工作机制", "关键动作、角色和输入输出", "流程图"),
+            ("执行路径与里程碑", "Roadmap", "让落地步骤可追踪", "阶段、里程碑和交付物", "时间线"),
+            ("资源与预算怎么安排", "Proof", "说明方案具备可执行条件", "人力、预算和依赖", "资源矩阵"),
+            ("风险和边界如何控制", "Proof", "提前处理阻力和不确定性", "风险、触发条件和应对动作", "风险矩阵"),
+            ("用什么指标验证结果", "Roadmap", "建立可复盘的验收方式", "指标、基线和目标值", "指标看板"),
+            ("结论与下一步决策", "Decision", "让观众知道现在需要做什么", "结论、行动建议和责任人", "行动清单"),
+        ]
+    title, role, purpose, points, visual = cards[index % len(cards)]
+    if index == slide_count - 1:
+        title = f"{title}：围绕“{subject}”形成判断"
+    return f"{title}｜角色：{role}｜目的：{purpose}｜要点：{points}｜视觉：{visual}"
 
 
 def _safe_chart_data(value) -> tuple[list[str], list[float], bool]:
