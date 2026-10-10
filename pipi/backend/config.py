@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     gateway_url: str = "https://api.example.invalid"
     public_url: str = "http://localhost:3000"
+    research_provider: str = "gateway"
     research_model: str = ""  # Optional pipiapi model with /alpha/search access.
+    minimax_api_key: str = ""
+    minimax_api_host: str = "https://api.minimaxi.com"
     credential_key: str  # Fernet key, required; never generated into source files.
     storage_dir: Path = Path("/data")
     template_dir: Path = Path(__file__).resolve().parents[2] / "templates"
@@ -22,7 +25,7 @@ class Settings(BaseSettings):
     request_timeout: int = 180
     converter_timeout: int = 90
 
-    @field_validator("gateway_url", "public_url")
+    @field_validator("gateway_url", "public_url", "minimax_api_host")
     @classmethod
     def validate_origin(cls, value: str) -> str:
         parsed = urlparse(value)
@@ -39,6 +42,14 @@ class Settings(BaseSettings):
         ):
             raise ValueError("HTTPS required except for local development")
         return value.rstrip("/")
+
+    @field_validator("research_provider")
+    @classmethod
+    def validate_research_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        if provider not in {"gateway", "minimax"}:
+            raise ValueError("Unsupported research provider")
+        return provider
 
 
 @lru_cache

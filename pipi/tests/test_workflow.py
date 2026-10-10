@@ -364,3 +364,44 @@ def test_timeout_and_restart_never_replay_paid_step(site, monkeypatch):
     dispatch()
     assert client.get("/api/jobs").json()[0]["status"] == "awaiting_confirmation"
     assert len(calls) == 1
+
+
+def test_rejected_search_step_can_resume_safely(site, monkeypatch):
+    import httpx
+    from pipi.backend.db import Step, session
+    from pipi.backend.security import Gateway
+    from pipi.backend.worker import run_job
+    from sqlalchemy import select
+
+    client, calls, _ = site
+    job = create(client, "rejected-search-create").json()
+    original = Gateway.request
+    rejected = []
+
+    def reject_once(self, method, path, **kwargs):
+        if method == "POST" and path == "/v1/alpha/search" and not rejected:
+            rejected.append(True)
+            return httpx.Response(403)
+        return original(self, method, path, **kwargs)
+
+    monkeypatch.setattr(Gateway, "request", reject_once)
+    run_job(job["id"])
+
+    failed = next(item for item in client.get("/api/jobs").json() if item["id"] == job["id"])
+    assert failed["status"] == "failed"
+    assert failed["error"] == "research_unavailable"
+    with session() as db:
+        step = db.scalar(
+            select(Step).where(Step.job_id == job["id"], Step.name == "research-search")
+        )
+        assert step.status == "rejected"
+
+    resumed = client.post("/api/jobs/" + job["id"] + "/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "queued"
+    run_job(job["id"])
+
+    completed = next(item for item in client.get("/api/jobs").json() if item["id"] == job["id"])
+    assert completed["status"] == "complete"
+    assert len(rejected) == 1
+    assert len(calls) == 1

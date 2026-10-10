@@ -673,7 +673,15 @@ def resume_job(job_id: str, auth=Depends(current_session)):
             raise HTTPException(409, "presentation_deleted")
         if not policy["enabled"] and job.kind != "export":
             raise HTTPException(503, "site_paused")
-        if db.scalar(select(Step.id).where(Step.job_id == job.id, Step.status != "complete")):
+        # Only an in-flight or uncertain request may have reached a billable
+        # upstream. A deterministic rejection is safe to retry after the user
+        # fixes the input, model permission, or provider configuration.
+        if db.scalar(
+            select(Step.id).where(
+                Step.job_id == job.id,
+                Step.status.in_(["calling", "uncertain"]),
+            )
+        ):
             raise HTTPException(409, "model_result_requires_manual_review")
         if (
             job.deck_id
