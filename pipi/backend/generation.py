@@ -5,6 +5,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from .config import settings
 from .db import Job, Policy, Step, session
 from .security import job_gateway
 
@@ -139,6 +140,89 @@ def call_model(job_id: str, name: str, model: str, kind: str, body: dict) -> dic
             step.status = "uncertain"
             db.commit()
         raise UncertainCall("model_result_unconfirmed") from exc
+
+
+def search_json(job_id: str, step: str, model: str, query: str):
+    """Run one authenticated web-search step through pipiapi.
+
+    Search is persisted as a paid/uncertain step just like text and image
+    calls. A timeout is never retried automatically because the upstream may
+    already have charged the user's account.
+    """
+
+    with session() as db:
+        existing = db.scalar(select(Step).where(Step.job_id == job_id, Step.name == step))
+        if existing:
+            if existing.status == "complete" and existing.response is not None:
+                return existing.response.get("payload", existing.response)
+            raise UncertainCall("search_step_requires_review")
+        policy = db.get(Policy, 1).data
+        job = db.get(Job, job_id)
+        if job.cancel_requested or not policy["enabled"]:
+            raise HTTPException(409, "job_cancelled_or_site_paused")
+    gateway = job_gateway(job_id)
+    models = available_models(gateway, policy)
+    if model not in models["text"]:
+        configured_research_model = str(
+            policy.get("research_model", "") or settings().research_model
+        ).strip()
+        if model != configured_research_model:
+            raise ValueError("research_model_not_available")
+        available = gateway.data("/v1/models")
+        if model not in {
+            item.get("id")
+            for item in available
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }:
+            raise ValueError("research_model_not_available")
+    with session() as db:
+        step_record = Step(job_id=job_id, name=step, status="calling")
+        db.add(step_record)
+        db.commit()
+        step_id = step_record.id
+    body = {
+        "id": f"pipi-search-{job_id}",
+        "model": model,
+        "query": query[:500],
+        "commands": {"search_query": [{"q": query[:500]}]},
+    }
+    try:
+        response = gateway.request(
+            "POST",
+            "/v1/alpha/search",
+            headers={"X-Pipi-Job-ID": job_id, "X-Pipi-Step-ID": step},
+            json=body,
+        )
+        request_id = response.headers.get("X-Oneapi-Request-Id")
+        if response.status_code >= 500 or response.status_code in {408, 409}:
+            raise UncertainCall("search_result_unconfirmed")
+        if response.status_code >= 400:
+            with session() as db:
+                record = db.get(Step, step_id)
+                record.status, record.request_id = "rejected", request_id
+                db.commit()
+            raise ValueError(f"research_gateway_rejected_{response.status_code}")
+        if len(response.content) > 8 * 1024 * 1024:
+            raise UncertainCall("search_response_too_large")
+        payload = response.json()
+        if not isinstance(payload, (dict, list)):
+            raise ValueError("research_response_invalid")
+        stored = payload if isinstance(payload, dict) else {"payload": payload}
+        with session() as db:
+            record = db.get(Step, step_id)
+            record.status, record.request_id, record.response = (
+                "complete",
+                request_id,
+                stored,
+            )
+            db.commit()
+        return payload
+    except (httpx.HTTPError, json.JSONDecodeError, UncertainCall) as exc:
+        with session() as db:
+            record = db.get(Step, step_id)
+            record.status = "uncertain"
+            db.commit()
+        raise UncertainCall("search_result_unconfirmed") from exc
 
 
 def text_json(

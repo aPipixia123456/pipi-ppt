@@ -24,6 +24,7 @@ import {
   Policy,
   Profile,
   ReasoningEffort,
+  ResearchMode,
   Template,
   TemplateDetail,
 } from "./types";
@@ -65,6 +66,7 @@ export default function Home() {
   const [imageModel, setImageModel] = useState("");
   const [images, setImages] = useState(true);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("auto");
+  const [researchMode, setResearchMode] = useState<ResearchMode>("auto");
   const [documents, setDocuments] = useState<{ id: string; name: string }[]>(
     [],
   );
@@ -244,6 +246,7 @@ export default function Home() {
         images,
         reasoning_effort: reasoningEffort,
         document_ids: documents.map((d) => d.id),
+        research_mode: researchMode,
       });
       if (job.deck_id) setDeck(await api<Deck>("/decks/" + job.deck_id));
       await refresh();
@@ -571,6 +574,25 @@ export default function Home() {
                         onChange={(e) => setCount(Number(e.target.value))}
                       />
                     </label>
+                    <label className="count-label">
+                      {t("资料模式", "Research")}
+                      <select
+                        value={researchMode}
+                        onChange={(e) =>
+                          setResearchMode(e.target.value as ResearchMode)
+                        }
+                      >
+                        <option value="auto">
+                          {t("资料不足时自动查", "Search when needed")}
+                        </option>
+                        <option value="on">
+                          {t("强制联网查资料", "Always search")}
+                        </option>
+                        <option value="off">
+                          {t("仅使用上传资料", "Uploaded sources only")}
+                        </option>
+                      </select>
+                    </label>
                   </div>
                 </section>
                 <section className="model-bar">
@@ -863,6 +885,19 @@ export default function Home() {
                           ...policy,
                           image_models: e.target.value.split("\n"),
                         })
+                      }
+                    />
+                  </label>
+                  <label>
+                    {t(
+                      "联网检索模型（需支持 /v1/alpha/search）",
+                      "Research model (must support /v1/alpha/search)",
+                    )}
+                    <input
+                      value={policy.research_model || ""}
+                      placeholder={t("可留空，使用所选文字模型", "Leave empty to use the selected text model")}
+                      onChange={(e) =>
+                        setPolicy({ ...policy, research_model: e.target.value })
                       }
                     />
                   </label>
@@ -1381,6 +1416,18 @@ function errorText(error: string, t: (zh: string, en: string) => string) {
     invalid_outline_response: [
       "模型返回的大纲格式不完整。点击“恢复”可使用已保存的模型结果继续处理。",
       "The model returned an incomplete outline. Click Resume to continue with the saved result.",
+    ],
+    research_unavailable: [
+      "自动查资料暂不可用。请稍后重试，或切换为仅使用上传资料。",
+      "Automatic research is unavailable. Retry later or use uploaded sources only.",
+    ],
+    research_no_sources: [
+      "没有找到可核对的资料来源，系统没有继续生成未经验证的数据。",
+      "No verifiable sources were found, so generation stopped before adding unsupported data.",
+    ],
+    research_model_not_available: [
+      "当前文字模型没有联网检索权限，请配置可搜索模型或关闭自动查资料。",
+      "The selected text model cannot search the web. Configure a search-capable model or disable research.",
     ],
     version_conflict: [
       "作品已有新版本。请保存本地修改后重新打开，避免覆盖。",

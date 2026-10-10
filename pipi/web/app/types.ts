@@ -25,6 +25,22 @@ export type Element = {
   values: number[];
 };
 export type ReasoningEffort = "auto" | "off" | "low" | "medium" | "high";
+export type ResearchMode = "auto" | "on" | "off";
+export type ResearchSource = {
+  id: string;
+  title: string;
+  url: string;
+  publisher?: string;
+  published_at?: string;
+  evidence?: string;
+};
+export type ResearchInfo = {
+  status?: string;
+  mode?: ResearchMode;
+  query?: string;
+  warning?: string;
+  sources?: ResearchSource[];
+};
 export type Slide = {
   id: string;
   name: string;
@@ -37,6 +53,7 @@ export type Deck = {
   title: string;
   outline: string[];
   slides: Slide[];
+  research?: ResearchInfo;
   version: number;
   updated: string;
 };
@@ -83,6 +100,7 @@ export type Policy = {
   enabled: boolean;
   text_models: string[];
   image_models: string[];
+  research_model: string;
   generation_concurrency: number;
   export_concurrency: number;
   user_running: number;

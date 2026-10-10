@@ -86,6 +86,20 @@ def site(tmp_path, monkeypatch, request):
                 headers={"X-Oneapi-Request-Id": f"request-{len(calls)}"},
                 json={"choices": [{"message": {"content": json.dumps(result)}}]},
             )
+        if method == "POST" and path == "/v1/alpha/search":
+            return httpx.Response(
+                200,
+                headers={"X-Oneapi-Request-Id": "search-request"},
+                json={
+                    "results": [
+                        {
+                            "title": "测试资料来源",
+                            "url": "https://example.com/source",
+                            "snippet": "这是用于自动研究回归测试的可核对资料摘要。",
+                        }
+                    ]
+                },
+            )
         raise AssertionError(f"Unexpected gateway request: {method} {path}")
 
     monkeypatch.setattr(Gateway, "request", fake_request)

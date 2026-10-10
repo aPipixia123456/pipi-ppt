@@ -435,6 +435,7 @@ def deck_view(deck):
         "title": deck.title,
         "outline": deck.outline,
         "slides": deck.slides,
+        "research": deck.research or {},
         "version": deck.version,
         "updated": deck.updated,
     }
@@ -464,6 +465,12 @@ def create_deck(
             title=body.title,
             template_id=body.template_id,
             template=template,
+            research={
+                "status": "pending",
+                "mode": body.research_mode,
+                "query": "",
+                "sources": [],
+            },
         )
         db.add(deck)
         db.flush()

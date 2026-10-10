@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     gateway_url: str = "https://api.example.invalid"
     public_url: str = "http://localhost:3000"
+    research_model: str = ""  # Optional pipiapi model with /alpha/search access.
     credential_key: str  # Fernet key, required; never generated into source files.
     storage_dir: Path = Path("/data")
     template_dir: Path = Path(__file__).resolve().parents[2] / "templates"

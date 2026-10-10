@@ -14,8 +14,15 @@ from sqlalchemy import delete, func, select, update
 from .config import settings
 from .conversion import export_deck, template_previews
 from .db import Asset, Deck, Job, LoginState, Policy, Step, Template, WebSession, now, session
-from .generation import UncertainCall, call_model, text_json
+from .generation import UncertainCall, call_model, search_json, text_json
 from .ppt_skill import SKILL_NAME, build_outline_prompt, build_page_prompt, validate_story_outline
+from .research import (
+    build_research_query,
+    citation_notes,
+    extract_sources,
+    format_research_context,
+    should_research,
+)
 from .schema import Slide
 from .security import job_gateway
 from .storage import (
@@ -214,6 +221,68 @@ def _field_values(raw) -> dict[str, str]:
     return values
 
 
+def _save_research(deck_id: str, research: dict):
+    with session() as db:
+        deck = db.get(Deck, deck_id)
+        if deck:
+            deck.research = research
+            deck.updated = now()
+            db.commit()
+
+
+def _research_for_job(job: Job, topic: str, document_text: str) -> tuple[dict, str]:
+    mode = str(job.args.get("research_mode", "auto")).strip().lower()
+    if mode not in {"auto", "on", "off"}:
+        mode = "auto"
+    research = {
+        "status": "skipped",
+        "mode": mode,
+        "query": "",
+        "sources": [],
+    }
+    if not should_research(mode, topic, document_text):
+        _save_research(job.deck_id, research)
+        return research, ""
+
+    query = build_research_query(topic, document_text)
+    research["query"] = query
+    with session() as db:
+        policy_research_model = str(db.get(Policy, 1).data.get("research_model", ""))
+    model = settings().research_model.strip() or policy_research_model.strip() or job.args["text_model"]
+    try:
+        payload = search_json(job.id, "research-search", model, query)
+        sources = extract_sources(payload)
+    except UncertainCall:
+        research["status"] = "awaiting_confirmation"
+        _save_research(job.deck_id, research)
+        raise
+    except (HTTPException, ValueError) as exc:
+        error_code = str(exc) if isinstance(exc, ValueError) else "research_unavailable"
+        if error_code not in {"research_model_not_available"}:
+            error_code = "research_unavailable"
+        research["status"] = "failed"
+        research["warning"] = error_code
+        _save_research(job.deck_id, research)
+        # If the user explicitly requested research, or there is no uploaded
+        # evidence to fall back to, do not proceed with unsupported facts.
+        if mode == "on" or not document_text.strip():
+            raise HTTPException(503, error_code) from exc
+        return research, ""
+
+    if not sources:
+        research["status"] = "no_results"
+        research["warning"] = "research_no_sources"
+        _save_research(job.deck_id, research)
+        if mode == "on" or not document_text.strip():
+            raise HTTPException(503, "research_no_sources")
+        return research, ""
+
+    research["status"] = "complete"
+    research["sources"] = sources
+    _save_research(job.deck_id, research)
+    return research, format_research_context(sources)
+
+
 def submit(db, auth, kind: str, args: dict, key: str, deck_id: str | None = None) -> Job:
     if not key or len(key) > 80:
         raise HTTPException(400, "idempotency_key_required")
@@ -328,14 +397,24 @@ def run_job(job_id: str):
             deck = db.get(Deck, job.deck_id) if job.deck_id else None
         job_gateway(job_id)  # Validate revocation and live account on each stage.
         if job.kind == "outline":
-            source = job.args["topic"]
+            topic = job.args["topic"]
+            document_text = ""
             with session() as db:
                 for asset_id in job.args.get("document_ids", []):
-                    source += (
-                        "\n<reference>"
+                    document_text += (
+                        "\n"
                         + read_document(owned_asset(db, job.owner, asset_id))
-                        + "</reference>"
                     )
+            research, research_context = _research_for_job(job, topic, document_text)
+            source = topic
+            if document_text.strip():
+                source += (
+                    "\n<reference>"
+                    + document_text[:120000]
+                    + "</reference>"
+                )
+            if research_context:
+                source += "\n<web-research>\n" + research_context + "\n</web-research>"
             result = text_json(
                 job_id,
                 "outline",
@@ -347,6 +426,8 @@ def run_job(job_id: str):
                 result, job.args["slide_count"], source
             )
             warnings.extend(validate_story_outline(outline))
+            if research.get("warning"):
+                warnings.append({"code": research["warning"]})
             with session() as db:
                 record = db.get(Deck, deck.id)
                 record.outline, record.updated, record.version = (
@@ -355,7 +436,14 @@ def run_job(job_id: str):
                     record.version + 1,
                 )
                 db.commit()
-            result_data = {"deck_id": deck.id, "generation_strategy": SKILL_NAME}
+            result_data = {
+                "deck_id": deck.id,
+                "generation_strategy": SKILL_NAME,
+                "research": {
+                    "status": research.get("status"),
+                    "source_count": len(research.get("sources", [])),
+                },
+            }
             if warnings:
                 result_data["warnings"] = warnings
             complete(job_id, result_data)
@@ -433,6 +521,7 @@ def generate_page(job: Job, deck: Deck):
         for e in layout["elements"]
         if e["type"] in {"chart", "table"}
     ]
+    research_sources = (deck.research or {}).get("sources", [])
     prompt = build_page_prompt(
         index=index,
         outline=deck.outline[index],
@@ -440,6 +529,7 @@ def generate_page(job: Job, deck: Deck):
         fields=fields,
         image_slots=image_slots,
         data_slots=data_slots,
+        research_context=format_research_context(research_sources),
     )
     response = text_json(
         job.id,
@@ -516,10 +606,11 @@ def generate_page(job: Job, deck: Deck):
             element["rows"] = rows
             if invalid:
                 data_warnings.append({"code": "invalid_table_data", "slot": element["id"]})
-    layout["name"], layout["notes"] = (
-        deck.outline[index][:200],
-        str(response.get("notes", ""))[:10000],
-    )
+    notes = str(response.get("notes", ""))
+    sources_note = citation_notes(research_sources)
+    if sources_note:
+        notes = f"{notes}\n\n{sources_note}".strip()
+    layout["name"], layout["notes"] = deck.outline[index][:200], notes[:10000]
     # Save page text before any image call, so partial results survive failures.
     with session() as db:
         record = db.get(Deck, deck.id)

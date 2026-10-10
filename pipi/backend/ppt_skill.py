@@ -104,11 +104,12 @@ def build_page_prompt(
     fields: list[dict],
     image_slots: list[dict],
     data_slots: list[dict],
+    research_context: str = "",
 ) -> str:
     """Build the per-page copy and visual-direction contract."""
     role = _extract_role(outline) or "Content"
     image_count = len(image_slots)
-    return f'''You are the final copywriter and visual director for slide {index + 1}. Use the outline as a content brief and turn it into a polished presentation page.
+    prompt = f'''You are the final copywriter and visual director for slide {index + 1}. Use the outline as a content brief and turn it into a polished presentation page.
 
 Outline: {outline}
 Story role: {role}
@@ -125,6 +126,9 @@ Apply the story-first and native-editable rules:
 
 This page has {image_count} editable image slot(s). If it has one or more, include a precise "image_prompt" describing subject, point of view, composition, lighting, palette, and the empty space required by the slot. Never request text, logos, charts, or fake statistics inside the image. If there is no image slot, omit image_prompt.
 Data slots: {json.dumps(data_slots, ensure_ascii=False)}. Also return "charts":{{"slot-id":{{"labels":["category"],"values":[number]}}}} and "tables":{{"slot-id":[["cell"]]}} where relevant. Never retain example data.'''
+    if research_context:
+        return prompt + f'''\n\nResearch evidence to use when making factual claims:\n{research_context}'''
+    return prompt
 
 
 def _extract_role(outline: str) -> str:

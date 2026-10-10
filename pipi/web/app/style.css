@@ -340,6 +340,10 @@ label input[type="checkbox"] {
   width: 64px;
   padding: 7px;
 }
+.count-label select {
+  max-width: 170px;
+  padding: 7px 8px;
+}
 .attachments {
   display: flex;
   flex-wrap: wrap;
@@ -818,6 +822,27 @@ label input[type="checkbox"] {
 }
 .outline > .primary {
   margin: 20px 0 0 35px;
+}
+.research-card {
+  margin: 18px 0 22px;
+  padding: 14px 16px;
+  border: 1px solid #e9e5f1;
+  border-radius: 12px;
+  background: #fbfaff;
+}
+.research-card p {
+  margin: 8px 0 0;
+}
+.research-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+}
+.research-sources a {
+  color: #6951cc;
+  font-size: 12px;
+  text-decoration: underline;
 }
 .editor-body {
   display: grid;

@@ -67,6 +67,7 @@ class CreateDeck(BaseModel):
     images: bool = True
     reasoning_effort: Literal["auto", "off", "low", "medium", "high"] = "auto"
     document_ids: list[str] = Field(default_factory=list, max_length=5)
+    research_mode: Literal["auto", "on", "off"] = "auto"
 
 
 class UpdateDeck(BaseModel):
@@ -92,6 +93,7 @@ class AdminPolicy(BaseModel):
     enabled: bool
     text_models: list[str] = Field(max_length=30)
     image_models: list[str] = Field(max_length=30)
+    research_model: str = Field(default="", max_length=160)
     generation_concurrency: int = Field(ge=1, le=32)
     export_concurrency: int = Field(ge=1, le=8)
     user_running: int = Field(ge=1, le=4)
@@ -105,4 +107,6 @@ class AdminPolicy(BaseModel):
             raise ValueError("Configure validated text/vision and image models before enabling")
         if any(not m.strip() or len(m) > 160 for m in self.text_models + self.image_models):
             raise ValueError("Invalid model identifier")
+        if self.research_model and not self.research_model.strip():
+            raise ValueError("Invalid research model identifier")
         return self

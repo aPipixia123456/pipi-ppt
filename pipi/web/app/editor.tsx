@@ -78,6 +78,7 @@ export function Editor({
           PDF
         </button>
       </div>
+      <ResearchSummary deck={deck} t={t} />
       {!deck.slides.length ? (
         <section className="outline">
           <p className="eyebrow">02 / {t("确认内容", "OUTLINE")}</p>
@@ -455,5 +456,43 @@ export function Editor({
         </div>
       )}
     </fieldset>
+  );
+}
+
+function ResearchSummary({
+  deck,
+  t,
+}: {
+  deck: Deck;
+  t: (zh: string, en: string) => string;
+}) {
+  if (!deck.research || deck.research.mode === "off") return null;
+  return (
+    <section className="research-card" aria-live="polite">
+      <strong>
+        {deck.research.status === "complete"
+          ? t("已补充外部资料", "External research added")
+          : deck.research.status === "pending"
+            ? t("正在检查资料并搜索", "Checking sources and searching")
+            : t("资料检索状态", "Research status")}
+      </strong>
+      {deck.research.warning && (
+        <p className="small muted">
+          {t(
+            "联网资料暂不可用，已保留当前资料并标记风险。",
+            "External research was unavailable. Existing material was kept and marked.",
+          )}
+        </p>
+      )}
+      {!!deck.research.sources?.length && (
+        <div className="research-sources">
+          {deck.research.sources.map((source) => (
+            <a key={source.id} href={source.url} target="_blank" rel="noreferrer">
+              {source.title}
+            </a>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

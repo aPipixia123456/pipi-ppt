@@ -21,6 +21,7 @@
 - 十六套内置模板来自 Presenton：executive、modern、momentum、general、nova、signal、civic、dynamic、editorial、horizon、landmark、mosaic、pulse、standard、swift、verdant。
 - 上传 PPTX，使用 python-pptx 读取文字、图片、主要版式、表格和单系列图表；LibreOffice 生成原始预览，视觉模型分析风格。确认转换后布局才进入个人模板库。
 - 支持主题、粘贴大纲和 PDF/DOCX/Markdown/TXT；可编辑大纲、页面文字、图片、表格、图表、形状、位置和尺寸；增删排序、AI 重写和演讲备注。
+- 资料模式支持“资料不足时自动查、强制联网查资料、仅使用上传资料”；自动研究通过当前用户授权调用 pipiapi `/v1/alpha/search`，保存来源、证据摘要和 URL，逐页演讲备注保留引用。联网检索模型可用 `PIPI_RESEARCH_MODEL` 或站点管理中的专用模型配置；未找到可核对来源时不会继续生成未经验证的数据。
 - PPTX 使用原生文本、形状、表格和图表；PDF 由同一 PPTX 转换。普通编辑和导出不调用模型。
 - 生成任务逐页保存，幂等键去重，支持取消及安全恢复。模型调用在发送前写入步骤记录；超时或 Worker 丢失无法确认消费时进入待确认，禁止自动重发。
 - 文件、模板、任务与作品均按用户隔离，凭据只以 Fernet 密文保存；浏览器持有 HttpOnly 会话 Cookie。变更接口校验 Origin。

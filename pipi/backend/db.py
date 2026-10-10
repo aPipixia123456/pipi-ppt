@@ -13,7 +13,10 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    inspect,
+    text,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -83,6 +86,7 @@ class Deck(Base):
     template: Mapped[dict] = mapped_column(JSON)  # Immutable template snapshot
     outline: Mapped[list] = mapped_column(JSON, default=list)
     slides: Mapped[list] = mapped_column(JSON, default=list)
+    research: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     version: Mapped[int] = mapped_column(default=1)
     created: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -128,6 +132,7 @@ DEFAULT_POLICY = {
     "enabled": False,
     "text_models": [],
     "image_models": [],
+    "research_model": "",
     "generation_concurrency": 4,
     "export_concurrency": 2,
     "user_running": 1,
@@ -155,6 +160,20 @@ def session():
 
 def initialize():
     Base.metadata.create_all(engine())
+    # ``create_all`` does not add columns to an existing deployment. Keep this
+    # small migration portable across the SQLite/PostgreSQL/MySQL JSON dialects.
+    if "research" not in {column["name"] for column in inspect(engine()).get_columns("decks")}:
+        try:
+            with engine().begin() as connection:
+                connection.execute(text("ALTER TABLE decks ADD COLUMN research JSON"))
+        except SQLAlchemyError:
+            # API and Worker containers can initialize at the same time. A
+            # concurrent migration is successful when the column now exists;
+            # preserve any other database error for startup diagnostics.
+            if "research" not in {
+                column["name"] for column in inspect(engine()).get_columns("decks")
+            }:
+                raise
     with session() as db:
         if not db.get(Policy, 1):
             db.add(Policy(id=1, data=DEFAULT_POLICY.copy()))
